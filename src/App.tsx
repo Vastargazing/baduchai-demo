@@ -593,7 +593,7 @@ function ExcelDialog({ ctx, onClose }: { ctx: Ctx; onClose: () => void }) {
   const fileRef = useRef<HTMLInputElement>(null)
 
   const download = () => {
-    const bytes = buildPriceTemplate(ctx.catalog.products)
+    const bytes = buildPriceTemplate(ctx.catalog.products, ctx.snapshotDate)
     const blob = new Blob([bytes as unknown as BlobPart], {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     })
@@ -647,10 +647,12 @@ function ExcelDialog({ ctx, onClose }: { ctx: Ctx; onClose: () => void }) {
           />
         </div>
         <p className="hint">
-          Колонки: артикул, название, фасовка, цена, валюта, наличие, количество. Заполните
-          «Количество» у нужных строк и загрузите файл обратно. Артикулы хранятся как текст;
-          выгруженный файл не содержит формул, а формулы во входящем файле читаются как обычные
-          значения и не выполняются.
+          Колонки: артикул, название, фасовка, цена, валюта, наличие, количество, сумма. Заполните
+          «Количество» у нужных строк и загрузите файл обратно. Шапка и строка итогов закреплены —
+          при прокрутке видно и названия колонок, и общую сумму, которая пересчитывается сразу.
+          Артикулы хранятся как текст. Формулы в файле только наши собственные — сумма строки и
+          итоги; текст каталога формулой стать не может, а формулы из загруженного файла читаются
+          как обычные значения и не выполняются.
         </p>
       </div>
 

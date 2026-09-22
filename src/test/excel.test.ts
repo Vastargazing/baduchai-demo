@@ -8,25 +8,36 @@ import {
   neutralizeFormula,
   unescapeCell,
   TEMPLATE_HEADERS,
+  HEADER_ROW,
 } from '../lib/xlsx'
+import { unzipSync, strFromU8 } from 'fflate'
 import { parseSheetRows, parseWorkbook } from '../lib/importSheet'
 import { applicableRows } from '../lib/parseOrder'
 import { buildCart, computeTotals } from '../lib/totals'
 
+/** Лист книги как текст XML — для проверок закрепления, итогов и оформления. */
+function sheetXml(bytes: Uint8Array): string {
+  return strFromU8(unzipSync(bytes)['xl/worksheets/sheet1.xml'])
+}
+function stylesXml(bytes: Uint8Array): string {
+  return strFromU8(unzipSync(bytes)['xl/styles.xml'])
+}
+
 describe('прайс-шаблон', () => {
   it('содержит требуемые колонки и все товары', () => {
     const table = readXlsx(buildPriceTemplate(catalog.products))
-    expect(table[0]).toEqual([...TEMPLATE_HEADERS])
-    expect(table.length).toBe(catalog.products.length + 1)
+    // строка 1 — название, строка 2 — итоги, строка 3 — заголовки
+    expect(table[HEADER_ROW - 1]).toEqual([...TEMPLATE_HEADERS])
+    expect(table.length).toBe(catalog.products.length + HEADER_ROW)
   })
 
   it('артикулы остаются текстом', () => {
     const table = readXlsx(buildPriceTemplate(catalog.products))
-    for (const row of table.slice(1)) {
+    for (const row of table.slice(HEADER_ROW)) {
       expect(typeof row[0]).toBe('string')
       expect(row[0].length).toBeGreaterThan(0)
     }
-    const skus = table.slice(1).map((r) => r[0])
+    const skus = table.slice(HEADER_ROW).map((r) => r[0])
     expect(skus).toContain('SHU-47')
     expect(skus).toContain('SHU-10')
   })
@@ -48,6 +59,84 @@ describe('прайс-шаблон', () => {
       const row = table.find((r) => r[0] === p.sku)!
       expect(row[2]).not.toMatch(/^\d+ г$/)
     }
+  })
+
+  it('в названии листа указан снимок каталога', () => {
+    const table = readXlsx(buildPriceTemplate(catalog.products, '22 сентября 2026 г.'))
+    expect(table[0][0]).toContain('Бадучай')
+    expect(table[0][0]).toContain('22 сентября 2026')
+    expect(table[0][0]).toContain('демонстрационный прототип')
+  })
+})
+
+describe('шапка прайса закреплена', () => {
+  const xml = sheetXml(buildPriceTemplate(catalog.products))
+
+  it('верхние строки не прокручиваются', () => {
+    expect(xml).toContain(`<pane ySplit="${HEADER_ROW}"`)
+    expect(xml).toContain('state="frozen"')
+    expect(xml).toContain(`topLeftCell="A${HEADER_ROW + 1}"`)
+  })
+
+  it('курсор сразу стоит в колонке количества', () => {
+    expect(xml).toContain(`activeCell="G${HEADER_ROW + 1}"`)
+  })
+
+  it('по таблице можно фильтровать', () => {
+    expect(xml).toContain(`<autoFilter ref="A${HEADER_ROW}:H${HEADER_ROW + catalog.products.length}"`)
+  })
+})
+
+describe('итоги в прайсе', () => {
+  const bytes = buildPriceTemplate(catalog.products)
+  const xml = sheetXml(bytes)
+  const last = HEADER_ROW + catalog.products.length
+
+  it('число упаковок считается даже если количество введено текстом', () => {
+    // при вставке из переписки количество нередко попадает в ячейку строкой
+    expect(xml).toContain('IFERROR')
+  })
+
+  it('сумма и число упаковок считаются формулами и видны всегда', () => {
+    expect(xml).toContain(`<f>SUMPRODUCT(IFERROR(G${HEADER_ROW + 1}:G${last}*1,0))</f>`)
+    expect(xml).toContain(`<f>SUM(H${HEADER_ROW + 1}:H${last})</f>`)
+    // строка итогов находится внутри закреплённой области
+    expect(2).toBeLessThanOrEqual(HEADER_ROW)
+  })
+
+  it('у каждой строки есть сумма позиции', () => {
+    for (const r of [HEADER_ROW + 1, HEADER_ROW + 2, last]) {
+      expect(xml).toContain(`<f>IF(G${r}=&quot;&quot;,&quot;&quot;,D${r}*G${r})</f>`)
+    }
+  })
+
+  it('незаполненная строка не показывает нулевую сумму', () => {
+    const table = readXlsx(bytes)
+    const row = table.find((r) => r[0] === 'SHU-32')!
+    expect(row[7] ?? '').toBe('')
+  })
+
+  it('колонка «Сумма» присутствует в заголовках', () => {
+    expect([...TEMPLATE_HEADERS]).toContain('Сумма')
+  })
+})
+
+describe('оформление прайса', () => {
+  const bytes = buildPriceTemplate(catalog.products)
+
+  it('использует шрифт сайта', () => {
+    expect(stylesXml(bytes)).toContain('<name val="Neucha"/>')
+  })
+
+  it('колонки имеют заданную ширину, а не стандартную', () => {
+    const xml = sheetXml(bytes)
+    expect(xml).toMatch(/<col min="2" max="2" width="\d+" customWidth="1"\/>/)
+  })
+
+  it('отсутствующий товар выделен отдельным стилем', () => {
+    const out = catalog.products.find((p) => !p.in_stock)!
+    const idx = catalog.products.indexOf(out) + HEADER_ROW + 1
+    expect(sheetXml(bytes)).toContain(`<c r="F${idx}" s="11"`)
   })
 })
 
@@ -81,6 +170,30 @@ describe('защита от формул', () => {
     expect(table[1][0]).toBe('=HYPERLINK("http://x")')
   })
 
+  it('в формулы попадает только наша арифметика, без текста каталога', () => {
+    const xml = strFromU8(unzipSync(buildPriceTemplate(catalog.products))['xl/worksheets/sheet1.xml'])
+    const formulas = [...xml.matchAll(/<f>([\s\S]*?)<\/f>/g)].map((m) => m[1])
+    expect(formulas.length).toBeGreaterThan(catalog.products.length)
+    for (const f of formulas) {
+      // допускаем только SUM/IF по ссылкам на ячейки и умножение
+      expect(f, f).toMatch(
+        /^(SUM\([A-H]\d+:[A-H]\d+\)|SUMPRODUCT\(IFERROR\([A-H]\d+:[A-H]\d+\*1,0\)\)|IF\([A-H]\d+=&quot;&quot;,&quot;&quot;,[A-H]\d+\*[A-H]\d+\))$/,
+      )
+    }
+  })
+
+  it('текст товара не превращается в формулу даже с опасным префиксом', () => {
+    const bytes = buildXlsx([
+      ['Артикул', 'Название', 'Количество'],
+      ['=SUM(A1)', '@cmd', 2],
+    ])
+    const xml = new TextDecoder().decode(bytes)
+    expect(xml).not.toContain('<f>')
+    const table = readXlsx(bytes)
+    expect(table[1][0]).toBe('=SUM(A1)')
+    expect(table[1][1]).toBe('@cmd')
+  })
+
   it('формула во входящем файле читается как значение и не вычисляется', () => {
     // лист, где ячейка содержит <f> и кэшированное значение
     const sheet =
@@ -98,7 +211,7 @@ describe('импорт заполненного шаблона', () => {
   /** Имитирует покупателя: берём шаблон и проставляем количества. */
   function fillTemplate(quantities: Record<string, string>) {
     const table = readXlsx(buildPriceTemplate(catalog.products))
-    for (const row of table.slice(1)) {
+    for (const row of table.slice(HEADER_ROW)) {
       if (quantities[row[0]] !== undefined) row[6] = quantities[row[0]]
     }
     return table

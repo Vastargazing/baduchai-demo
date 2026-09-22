@@ -545,9 +545,46 @@ async function main() {
     assert(existsSync(templatePath), 'файл не сохранён')
     const buf = await readFile(templatePath)
     assert(buf[0] === 0x50 && buf[1] === 0x4b, 'это не zip/xlsx')
-    assert(!buf.includes(Buffer.from('<f>')), 'в выгрузке найдена формула')
     await page.locator('.modal-foot .btn').click()
-    return `${download.suggestedFilename()}, ${(buf.length / 1024).toFixed(1)} КБ, формул нет`
+    return `${download.suggestedFilename()}, ${(buf.length / 1024).toFixed(1)} КБ`
+  })
+
+  await check('в прайсе закреплена шапка и есть строка итогов', async () => {
+    const { unzipSync, strFromU8 } = await import('fflate')
+    const xml = strFromU8(unzipSync(new Uint8Array(await readFile(templatePath)))['xl/worksheets/sheet1.xml'])
+    assert(/<pane ySplit="3"[^>]*state="frozen"/.test(xml), 'верхние строки не закреплены')
+    assert(xml.includes('<f>SUM(H4:H'), 'нет формулы итоговой суммы')
+    assert(xml.includes('SUMPRODUCT(IFERROR(G4:G'), 'нет формулы числа упаковок')
+    assert(xml.includes('<autoFilter'), 'нет фильтра по колонкам')
+    // формулы только наши арифметические, текста каталога в них нет
+    const formulas = [...xml.matchAll(/<f>([\s\S]*?)<\/f>/g)].map((m) => m[1])
+    const bad = formulas.filter(
+      (f) => !/^(SUM\([A-H]\d+:[A-H]\d+\)|SUMPRODUCT\(IFERROR\([A-H]\d+:[A-H]\d+\*1,0\)\)|IF\([A-H]\d+=&quot;&quot;,&quot;&quot;,[A-H]\d+\*[A-H]\d+\))$/.test(f),
+    )
+    assert(bad.length === 0, `посторонние формулы: ${bad.slice(0, 2).join(' | ')}`)
+    return `закрепление есть, формул ${formulas.length}, все арифметические`
+  })
+
+  await check('прайс открывается в LibreOffice и считает итог', async () => {
+    const { execFileSync } = await import('node:child_process')
+    const { fillTemplate } = await import('./fill-template.mjs')
+    const filled = path.join(DOWNLOADS, 'totals.xlsx')
+    await fillTemplate(templatePath, filled, { 'SHU-47': 2, 'SHU-32': 1, 'SHU-10': 3 })
+    const outDir = path.join(DOWNLOADS, 'lo')
+    try {
+      execFileSync('libreoffice', [
+        '--headless', '--convert-to',
+        'csv:Text - txt - csv (StarCalc):44,34,76,1,,0,false,true,true',
+        '--outdir', outDir, filled,
+      ], { stdio: 'ignore', timeout: 240000 })
+    } catch {
+      return 'NOT_REACHED: LibreOffice недоступен в этом окружении'
+    }
+    const csv = await readFile(path.join(outDir, 'totals.csv'), 'utf8')
+    const totals = csv.split('\n')[1] ?? ''
+    // 2×$30 + 1×$64 + 3×$10 = 6 упаковок, $154
+    assert(/,6,154\.00/.test(totals), `строка итогов: ${totals}`)
+    return '6 упак., $154 — совпадает с расчётом прототипа'
   })
 
   await check('импорт заполненного шаблона даёт контрольный итог', async () => {

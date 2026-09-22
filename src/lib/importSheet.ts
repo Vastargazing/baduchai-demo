@@ -35,24 +35,37 @@ export interface ImportOutcome extends ParseReport {
   /** Строк с заполненным количеством. Пустые строки шаблона не считаются ошибкой. */
   filledRows: number
   headerDetected: boolean
+  /** Номер строки с заголовками (0-based), если она найдена. */
+  headerIndex: number
+}
+
+/** Похожа ли строка на шапку таблицы. */
+function looksLikeHeader(cells: string[]): boolean {
+  const keys = cells.map((c) => normName(c))
+  const hasSku = keys.some((k) => COLUMN_SYNONYMS.sku.some((sy) => k === normName(sy)))
+  const hasName = keys.some((k) => COLUMN_SYNONYMS.name.some((sy) => k === normName(sy)))
+  return hasSku || hasName
 }
 
 /** Разбирает уже прочитанную таблицу. Отделено от чтения файла ради тестов. */
 export function parseSheetRows(index: ProductIndex, table: string[][]): ImportOutcome {
   if (!table.length) {
-    return { rows: [], totalLines: 0, mergedCount: 0, filledRows: 0, headerDetected: false }
+    return { rows: [], totalLines: 0, mergedCount: 0, filledRows: 0, headerDetected: false, headerIndex: -1 }
   }
 
-  const header = table[0] ?? []
-  const headerDetected = header.some((h) => normName(h) === normName('Артикул') || normName(h) === normName('Название'))
+  // Шапка не обязана быть первой строкой: в нашем прайсе над ней ещё
+  // название листа и строка итогов, а покупатель мог добавить свои строки.
+  const headerIndex = table.slice(0, 12).findIndex(looksLikeHeader)
+  const headerDetected = headerIndex >= 0
+  const header = headerDetected ? table[headerIndex] : (table[0] ?? [])
   const cols = findColumns(header)
-  const body = headerDetected ? table.slice(1) : table
+  const body = headerDetected ? table.slice(headerIndex + 1) : table
 
   const rows: PreviewRow[] = []
   let filledRows = 0
 
   body.forEach((cells, i) => {
-    const lineNo = i + (headerDetected ? 2 : 1)
+    const lineNo = i + (headerDetected ? headerIndex + 2 : 1)
     const sku = (cells[cols.sku] ?? '').trim()
     const name = (cells[cols.name] ?? '').trim()
     const qtyCell = (cells[cols.qty] ?? '').trim()
@@ -122,7 +135,7 @@ export function parseSheetRows(index: ProductIndex, table: string[][]): ImportOu
   })
 
   const merged = mergeDuplicates(rows, filledRows)
-  return { ...merged, filledRows, headerDetected }
+  return { ...merged, filledRows, headerDetected, headerIndex }
 }
 
 export function parseWorkbook(index: ProductIndex, data: Uint8Array): ImportOutcome {

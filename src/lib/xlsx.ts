@@ -1,17 +1,19 @@
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
 import type { Product } from './types'
+import { STYLES, S } from './xlsxStyles'
 
 /**
  * Минимальные чтение и запись .xlsx без внешних офисных библиотек.
  *
  * Безопасность:
- *  — при записи ячейки всегда строковые (`inlineStr`) или числовые; элемент <f>
- *    не создаётся никогда, поэтому выгруженный файл не содержит формул;
- *  — текст, начинающийся с = + - @ и управляющих символов, дополнительно
- *    экранируется апострофом, чтобы не превратиться в формулу при пересохранении
- *    в CSV или при вставке в другой редактор;
- *  — при чтении элемент <f> игнорируется: берётся только сохранённое значение,
- *    никакие выражения не вычисляются.
+ *  — данные каталога всегда пишутся как строка (`inlineStr`) или число и
+ *    формулой стать не могут: текст, начинающийся с = + - @ и управляющих
+ *    символов, дополнительно экранируется апострофом;
+ *  — формулы в файле есть, но только наши собственные и только арифметические:
+ *    сумма строки D*G и итоги SUM по колонкам. Они не зависят от текста и
+ *    перечислены в FORMULA_CELLS ниже;
+ *  — при чтении элемент <f> игнорируется полностью: берётся лишь сохранённое
+ *    значение, никакие выражения не вычисляются.
  */
 
 export const TEMPLATE_HEADERS = [
@@ -22,7 +24,13 @@ export const TEMPLATE_HEADERS = [
   'Валюта',
   'Наличие',
   'Количество',
+  'Сумма',
 ] as const
+
+/** Колонка, которую заполняет покупатель. */
+export const QTY_COLUMN = 6
+/** Строка с заголовками таблицы (1-based). Выше — название и строка итогов. */
+export const HEADER_ROW = 3
 
 const DANGEROUS_PREFIX = /^[=+\-@\t\r]/
 
@@ -77,14 +85,11 @@ const ROOT_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`
 
 const WORKBOOK = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Прайс" sheetId="1" r:id="rId1"/></sheets></workbook>`
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Прайс" sheetId="1" r:id="rId1"/></sheets><calcPr calcId="191029" fullCalcOnLoad="1"/></workbook>`
 
 const WORKBOOK_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`
 
-// s=1 — жирный заголовок, s=2 — явный текстовый формат (@) для артикулов
-const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="@"/></numFmts><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`
 
 /** Собирает .xlsx из таблицы значений. Первая строка — заголовки. */
 export function buildXlsx(rows: CellValue[][], textColumns: number[] = []): Uint8Array {
@@ -94,8 +99,8 @@ export function buildXlsx(rows: CellValue[][], textColumns: number[] = []): Uint
       const cells = row
         .map((value, c) => {
           const ref = `${colLetter(c)}${r + 1}`
-          if (r === 0) return cellXml(ref, value, 1)
-          return cellXml(ref, value, textSet.has(c) ? 2 : undefined)
+          if (r === 0) return cellXml(ref, value, S.HEADER)
+          return cellXml(ref, value, textSet.has(c) ? S.SKU : undefined)
         })
         .join('')
       return `<row r="${r + 1}">${cells}</row>`
@@ -122,22 +127,108 @@ export function buildXlsx(rows: CellValue[][], textColumns: number[] = []): Uint
   )
 }
 
-/** Прайс-шаблон: снимок каталога плюс пустая колонка «Количество». */
-export function buildPriceTemplate(products: Product[]): Uint8Array {
-  const rows: CellValue[][] = [[...TEMPLATE_HEADERS]]
-  for (const p of products) {
-    rows.push([
-      p.sku ?? '',
-      p.name_full,
-      p.weight_g === null ? (p.pack_label ?? 'не указана') : `${p.weight_g} г`,
-      p.price_minor / 10 ** p.currency_minor_unit,
-      p.currency,
-      p.stock_label,
-      '',
-    ])
-  }
-  // артикул и валюта — текстовые колонки, чтобы Excel не менял их тип
-  return buildXlsx(rows, [0, 4])
+/** Ячейка с нашей собственной формулой. Текст каталога сюда не попадает. */
+function formulaCell(ref: string, formula: string, styleIdx: number): string {
+  return `<c r="${ref}" s="${styleIdx}"><f>${escapeXml(formula)}</f></c>`
+}
+
+/** Ширины колонок прайса, в знакоместах. */
+const PRICE_WIDTHS = [13, 54, 14, 11, 9, 16, 13, 14]
+
+/**
+ * Прайс-лист для заполнения.
+ *
+ * Шапка из трёх строк закреплена: при прокрутке видны и названия колонок,
+ * и строка итогов. Итоги считаются формулами, поэтому сумма обновляется прямо
+ * во время заполнения, а не после загрузки файла обратно.
+ */
+export function buildPriceTemplate(products: Product[], snapshotDate?: string): Uint8Array {
+  const first = HEADER_ROW + 1
+  const last = HEADER_ROW + products.length
+
+  const rows: string[] = []
+
+  const title =
+    `Бадучай — прайс-лист` +
+    (snapshotDate ? ` · снимок каталога от ${snapshotDate}` : '') +
+    ` · демонстрационный прототип, настоящий заказ не оформляется`
+  rows.push(
+    `<row r="1" ht="30" customHeight="1">${cellXml('A1', title, S.TITLE)}</row>`,
+  )
+
+  // Строка итогов стоит НАД таблицей и попадает в закреплённую область —
+  // так сумма видна всегда, а не только в конце длинного списка.
+  rows.push(
+    `<row r="2" ht="26" customHeight="1">` +
+      cellXml('A2', 'Заполните колонку «Количество» — итог посчитается сам', S.HINT) +
+      ['B2', 'C2', 'D2', 'E2'].map((ref) => cellXml(ref, '', S.HINT)).join('') +
+      cellXml('F2', 'Итого:', S.TOTAL_LABEL) +
+      // SUM игнорирует количества, попавшие в ячейку как текст (частый случай
+      // при вставке из переписки), и тогда сумма была бы верной, а число
+      // упаковок — нулём. Умножение на 1 приводит текст к числу.
+      formulaCell('G2', `SUMPRODUCT(IFERROR(G${first}:G${last}*1,0))`, S.TOTAL_QTY) +
+      formulaCell('H2', `SUM(H${first}:H${last})`, S.TOTAL_SUM) +
+      `</row>`,
+  )
+
+  rows.push(
+    `<row r="3" ht="32" customHeight="1">` +
+      TEMPLATE_HEADERS.map((h, i) =>
+        cellXml(`${colLetter(i)}3`, h, i >= 3 && i !== 4 && i !== 5 ? S.HEADER_NUM : S.HEADER),
+      ).join('') +
+      `</row>`,
+  )
+
+  products.forEach((p, i) => {
+    const r = first + i
+    const pack = p.weight_g === null ? (p.pack_label ?? 'не указана') : `${p.weight_g} г`
+    rows.push(
+      `<row r="${r}" ht="19" customHeight="1">` +
+        cellXml(`A${r}`, p.sku ?? '', S.SKU) +
+        cellXml(`B${r}`, p.name_full, S.TEXT) +
+        cellXml(`C${r}`, pack, S.PACK) +
+        cellXml(`D${r}`, p.price_minor / 10 ** p.currency_minor_unit, S.MONEY) +
+        cellXml(`E${r}`, p.currency, S.CURRENCY) +
+        cellXml(`F${r}`, p.stock_label, p.in_stock ? S.STOCK_IN : S.STOCK_OUT) +
+        cellXml(`G${r}`, '', S.QTY_INPUT) +
+        // пока количество не введено, сумма строки остаётся пустой
+        formulaCell(`H${r}`, `IF(G${r}="","",D${r}*G${r})`, S.LINE_SUM) +
+        `</row>`,
+    )
+  })
+
+  const cols = PRICE_WIDTHS.map(
+    (w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`,
+  ).join('')
+
+  const sheet =
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+    `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
+    `<dimension ref="A1:H${last}"/>` +
+    `<sheetViews><sheetView workbookViewId="0" showGridLines="0" tabSelected="1">` +
+    // закрепляем три верхние строки: название, итоги и заголовки колонок
+    `<pane ySplit="${HEADER_ROW}" topLeftCell="A${first}" activePane="bottomLeft" state="frozen"/>` +
+    `<selection pane="bottomLeft" activeCell="G${first}" sqref="G${first}"/>` +
+    `</sheetView></sheetViews>` +
+    `<sheetFormatPr defaultRowHeight="18"/>` +
+    `<cols>${cols}</cols>` +
+    `<sheetData>${rows.join('')}</sheetData>` +
+    `<autoFilter ref="A${HEADER_ROW}:H${last}"/>` +
+    `<mergeCells count="1"><mergeCell ref="A1:H1"/></mergeCells>` +
+    `<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/>` +
+    `</worksheet>`
+
+  return zipSync(
+    {
+      '[Content_Types].xml': strToU8(CONTENT_TYPES),
+      '_rels/.rels': strToU8(ROOT_RELS),
+      'xl/workbook.xml': strToU8(WORKBOOK),
+      'xl/_rels/workbook.xml.rels': strToU8(WORKBOOK_RELS),
+      'xl/styles.xml': strToU8(STYLES),
+      'xl/worksheets/sheet1.xml': strToU8(sheet),
+    },
+    { level: 6 },
+  )
 }
 
 function textOf(node: Element | null | undefined): string {
