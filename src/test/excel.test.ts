@@ -292,6 +292,37 @@ describe('импорт заполненного шаблона', () => {
     expect(report.rows[0].merged).toBe(true)
   })
 
+  it('из файла берутся только артикул, название и количество', () => {
+    // покупатель мог поправить в Excel цену, название и колонку «Сумма» —
+    // на заказ это влиять не должно: цена всегда берётся из снимка каталога
+    const report = parseSheetRows(index, [
+      [...TEMPLATE_HEADERS],
+      ['SHU-47', 'Совсем другое название', '120 г', '1', 'EUR', 'В наличии', '2', '999999'],
+    ])
+    expect(report.rows[0].status).toBe('ok')
+    expect(report.rows[0].product!.sku).toBe('SHU-47')
+
+    const lines = applicableRows(report.rows).map((r) => ({
+      source_id: r.product!.source_id,
+      qty: r.qty!,
+    }))
+    const totals = computeTotals(buildCart(lines, byId))
+    expect(totals.amountMinor).toBe(6000) // 2 × $30 из каталога, а не из файла
+    expect(totals.currency).toBe('USD')
+  })
+
+  it('импорт не меняет корзину сам: строки лишь предлагаются к применению', () => {
+    const report = parseSheetRows(index, [
+      [...TEMPLATE_HEADERS],
+      ['SHU-47', 'БА', '120 г', '30', 'USD', 'В наличии', '2', ''],
+      ['Инь Чжень', '', '', '', '', '', '1', ''],
+      ['НЕТ-999', 'Выдуманный', '', '', '', '', '3', ''],
+    ])
+    // применить можно только однозначно распознанные строки
+    expect(applicableRows(report.rows).map((r) => r.product!.sku)).toEqual(['SHU-47'])
+    expect(report.rows.map((r) => r.status)).toEqual(['ok', 'ambiguous', 'not_found'])
+  })
+
   it('понимает переставленные колонки по заголовкам', () => {
     const report = parseSheetRows(index, [
       ['Количество', 'Название', 'Артикул'],
