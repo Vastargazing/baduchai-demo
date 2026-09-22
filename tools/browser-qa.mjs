@@ -204,6 +204,38 @@ async function main() {
     return `Цин Хо: ${deepCount}, весь каталог: ${all}`
   })
 
+  await check('рубрики переносятся по строкам, а не прокручиваются вбок', async () => {
+    const info = await page.evaluate(() => {
+      const el = document.querySelector('.chips')
+      return {
+        wrap: getComputedStyle(el).flexWrap,
+        clipped: el.scrollWidth > el.clientWidth + 1,
+      }
+    })
+    eq(info.wrap, 'wrap', 'перенос рубрик')
+    assert(!info.clipped, 'ряд рубрик обрезан по ширине')
+    return 'перенос по строкам, обрезки нет'
+  })
+
+  await check('свёрнутые рубрики раскрываются кнопкой', async () => {
+    // на широком экране все рубрики помещаются и кнопка не нужна
+    const more = T(page, 'chips-more')
+    if ((await more.count()) === 0) {
+      const visible = await page.locator('.chips .chip').count()
+      assert(visible >= 11, `видно рубрик: ${visible}`)
+      return 'все рубрики помещаются, кнопка не нужна'
+    }
+    const before = await page.locator('.chips').first().evaluate((el) => el.clientHeight)
+    await more.click()
+    await page.waitForTimeout(200)
+    const after = await page.locator('.chips').first().evaluate((el) => el.clientHeight)
+    assert(after > before, `высота не выросла: ${before} → ${after}`)
+    eq(await more.getAttribute('aria-expanded'), 'true', 'состояние кнопки')
+    await more.click()
+    await page.waitForTimeout(150)
+    return `раскрытие ${before} → ${after} px`
+  })
+
   await check('ввод количества и кнопки плюс/минус в каталоге', async () => {
     await T(page, 'search').fill('SHU-47')
     await page.waitForTimeout(120)

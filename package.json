@@ -14,7 +14,8 @@
     "qa:browser": "node tools/browser-qa.mjs",
     "perf": "node tools/perf.mjs",
     "verify:published": "node tools/verify-published.mjs",
-    "qa:all": "npm run test && npm run build && npm run qa:browser && npm run perf"
+    "qa:all": "npm run test && npm run build && npm run qa:browser && npm run qa:widths && npm run perf",
+    "qa:widths": "node tools/qa-widths.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

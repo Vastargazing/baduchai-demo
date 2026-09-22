@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Catalog, CartLine, CategoryNode, Product } from './lib/types'
 import { buildIndex, searchProducts, type ProductIndex } from './lib/match'
 import { buildCategoryTree, filterRows, filterByCategory, pathTo, type CategoryTree } from './lib/categories'
@@ -296,6 +296,15 @@ interface Ctx {
  * Фильтр повторяет устройство меню исходного сайта: рубрики верхнего уровня,
  * под ними — подрубрики выбранной, и так далее вглубь.
  */
+/**
+ * Фильтр повторяет устройство меню исходного сайта: рубрики верхнего уровня,
+ * под ними — подрубрики выбранной, и так далее вглубь.
+ *
+ * Рубрики всегда переносятся по строкам. Горизонтальная прокрутка на узком
+ * экране не годилась: ряд выглядел обрезанным, и было не видно, что он
+ * прокручивается. Вместо этого верхний ряд сворачивается до двух строк с
+ * кнопкой «ещё» — она появляется, только если рубрики реально не поместились.
+ */
 function CategoryFilter({
   rows,
   crumbs,
@@ -309,29 +318,67 @@ function CategoryFilter({
   total: number
   onSelect: (id: number | null) => void
 }) {
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const [expanded, setExpanded] = useState(false)
+  const [overflows, setOverflows] = useState(false)
+
+  // Пока ряд свёрнут, следим, помещаются ли рубрики: при смене ширины окна
+  // кнопка «ещё» должна появляться и исчезать сама.
+  useLayoutEffect(() => {
+    const el = rootRef.current
+    if (!el || expanded) return
+    const check = () => setOverflows(el.scrollHeight > el.clientHeight + 2)
+    check()
+    const observer = new ResizeObserver(check)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [rows, expanded])
+
   return (
     <div className="filter" data-testid="category-filter">
-      {rows.map((row, level) => (
-        <div className={`chips${level > 0 ? ' chips-sub' : ''}`} key={level}>
-          {level === 0 && (
-            <button className="chip" aria-pressed={selected === null} onClick={() => onSelect(null)}>
-              Весь каталог <span className="chip-count">{total}</span>
-            </button>
-          )}
-          {level > 0 && <span className="chips-label">в рубрике «{crumbs[level - 1]?.name}»:</span>}
-          {row.map((c) => (
-            <button
-              key={c.id}
-              className="chip"
-              aria-pressed={crumbs.some((x) => x.id === c.id)}
-              data-testid={`chip-${c.slug}`}
-              onClick={() => onSelect(crumbs.some((x) => x.id === c.id) ? (c.parent ?? null) : c.id)}
-            >
-              {c.name} <span className="chip-count">{c.count}</span>
-            </button>
-          ))}
-        </div>
-      ))}
+      {rows.map((row, level) => {
+        const isRoot = level === 0
+        // Сворачиваем по умолчанию, а не «когда обнаружено переполнение»:
+        // без ограничения высоты scrollHeight равен clientHeight, и переполнение
+        // никогда бы не обнаружилось.
+        const collapsed = isRoot && !expanded
+        return (
+          <div
+            key={level}
+            ref={isRoot ? rootRef : undefined}
+            className={`chips${isRoot ? '' : ' chips-sub'}${collapsed ? ' chips-collapsed' : ''}`}
+          >
+            {isRoot && (
+              <button className="chip" aria-pressed={selected === null} onClick={() => onSelect(null)}>
+                Весь каталог <span className="chip-count">{total}</span>
+              </button>
+            )}
+            {!isRoot && <span className="chips-label">в рубрике «{crumbs[level - 1]?.name}»:</span>}
+            {row.map((c) => (
+              <button
+                key={c.id}
+                className="chip"
+                aria-pressed={crumbs.some((x) => x.id === c.id)}
+                data-testid={`chip-${c.slug}`}
+                onClick={() => onSelect(crumbs.some((x) => x.id === c.id) ? (c.parent ?? null) : c.id)}
+              >
+                {c.name} <span className="chip-count">{c.count}</span>
+              </button>
+            ))}
+          </div>
+        )
+      })}
+
+      {overflows && (
+        <button
+          className="chips-more"
+          data-testid="chips-more"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? 'Свернуть рубрики' : 'Показать все рубрики'}
+        </button>
+      )}
     </div>
   )
 }

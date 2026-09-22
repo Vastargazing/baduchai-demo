@@ -153,6 +153,17 @@ input, textarea, select { font-family: var(--hand); font-size: 15px; color: inhe
 
 .result-line { font-family: var(--mono); font-size: 13px; color: var(--ink-faint); margin: 0 0 16px; }
 
+/* Свёрнутый ряд рубрик: ровно две строки кнопок.
+   Высоту задаём в em, чтобы она следовала за размером шрифта на узких экранах. */
+.chips-collapsed { max-height: 6.2em; overflow: hidden; }
+.chips-more {
+  display: block; width: 100%; margin-top: -1px;
+  padding: 8px 12px; border: 1px solid var(--line-soft); background: rgba(255, 255, 255, 0.72);
+  font-family: var(--hand); font-size: 14px; color: var(--ink-soft);
+}
+.chips-more:hover { background: var(--accent-soft); color: #000; }
+@media (max-width: 880px) { .chips-collapsed { max-height: 5.4em; } }
+
 /* -- Сетка товаров: карточки без рамок, как на сайте -- */
 .grid { display: grid; gap: 26px 20px; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); }
 .card { display: flex; flex-direction: column; position: relative; scroll-margin-top: 150px; }
@@ -335,11 +346,10 @@ textarea.field { min-height: 158px; resize: vertical; font-family: var(--mono); 
   .header-actions .btn { flex: 1 1 auto; }
   /* в корзину ведёт нижняя панель — дублирующая кнопка съедает первый экран */
   .cart-btn { display: none; }
-  /* рубрики одной прокручиваемой строкой вместо нескольких рядов */
-  .chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; width: 100%; min-width: 0; }
-  .chips::-webkit-scrollbar { display: none; }
-  .chip { flex: 0 0 auto; padding: 11px 15px; }
-  .chips-label { display: none; }
+  /* рубрики переносятся по строкам; компактнее, чтобы помещалось больше */
+  .chip { padding: 9px 12px; font-size: 14px; }
+  .chips-sub .chip { padding: 8px 11px; font-size: 13px; }
+  .chips-label { padding: 8px 11px; font-size: 12px; }
   .layout { padding: 14px; }
   .grid { gap: 20px 14px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
   /* на узком экране описание сворачиваем до трёх строк, иначе список
