@@ -9,10 +9,12 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc -b --noEmit false --dry 2>/dev/null || tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "catalog:fetch": "node tools/fetch-catalog.mjs",
     "qa:browser": "node tools/browser-qa.mjs",
-    "perf": "node tools/perf.mjs"
+    "perf": "node tools/perf.mjs",
+    "verify:published": "node tools/verify-published.mjs",
+    "qa:all": "npm run test && npm run build && npm run qa:browser && npm run perf"
   },
   "dependencies": {
     "react": "^18.3.1",
