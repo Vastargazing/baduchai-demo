@@ -16,8 +16,8 @@ export interface CartTotals {
   amountMinor: number
   /** Вес только тех позиций, у которых он опубликован. */
   knownWeightG: number
-  /** Позиции без опубликованного веса. Пока их > 0, общий вес не является точным. */
-  unknownWeightItems: number
+  /** Позиции, у которых вес ожидается, но не опубликован магазином. */
+  unknownWeightItems: Product[]
   weightComplete: boolean
   currency: string
   currencySymbol: string
@@ -47,13 +47,18 @@ export function computeTotals(items: CartItem[]): CartTotals {
   let amountMinor = 0
   let knownWeightG = 0
   let packages = 0
-  let unknownWeightItems = 0
+  const unknownWeightItems: Product[] = []
 
   for (const item of items) {
     amountMinor += item.lineTotalMinor
     packages += item.qty
-    if (item.lineWeightG === null) unknownWeightItems++
-    else knownWeightG += item.lineWeightG
+    if (item.lineWeightG !== null) {
+      knownWeightG += item.lineWeightG
+      continue
+    }
+    // Вес считаем неполным только там, где магазин вообще его публикует.
+    // У чайника или браслета вес не является единицей продажи.
+    if (item.product.weight_expected) unknownWeightItems.push(item.product)
   }
 
   const first = items[0]?.product
@@ -64,7 +69,7 @@ export function computeTotals(items: CartItem[]): CartTotals {
     amountMinor,
     knownWeightG,
     unknownWeightItems,
-    weightComplete: unknownWeightItems === 0,
+    weightComplete: unknownWeightItems.length === 0,
     currency: first?.currency ?? 'USD',
     currencySymbol: first?.currency_symbol ?? '$',
   }

@@ -3,11 +3,20 @@ export interface Product {
   sku: string | null
   name_full: string
   name_short: string
+  /** Самая глубокая категория товара. */
   category: string
-  categories_all: string[]
+  category_id: number | null
+  /** Путь от корневой рубрики до самой глубокой: ['ЧАЙ', 'Улун', 'Цин Хо']. */
+  category_path: string[]
+  /** Все категории пути — по ним работает фильтр любого уровня. */
+  category_ids: number[]
+  top_category: string
+  is_tea: boolean
   pack_label: string | null
   weight_g: number | null
   weight_source: 'short_description' | 'name' | 'description' | null
+  /** Вес ожидается только у чая: для чайника или браслета он не единица продажи. */
+  weight_expected: boolean
   unit: string
   price_minor: number
   currency: string
@@ -24,21 +33,31 @@ export interface Product {
   fetched_at: string
 }
 
+export interface CategoryNode {
+  id: number
+  name: string
+  slug: string
+  parent: number | null
+  count: number
+}
+
 export interface CatalogMeta {
   source: string
-  source_category: string
+  source_scope: string
   fetched_at: string
   product_count: number
+  category_count: number
   method: string
   robots_txt: string
   notes: { sku: string; note: string }[]
   sku_collisions: { normalized: string; items: string[] }[]
-  known_categories: { id: number; name: string; site_count: number }[]
+  products_without_sku: number
+  tea_without_weight: string[]
 }
 
 export interface Catalog {
   meta: CatalogMeta
-  categories: string[]
+  categories: CategoryNode[]
   products: Product[]
 }
 

@@ -48,12 +48,11 @@ export function useCart(byId: Map<number, Product>) {
   }, [])
 
   const saveCurrentSet = useCallback(
-    (name: string) => {
-      const trimmed = name.trim() || `Набор от ${new Date().toLocaleDateString('ru-RU')}`
+    (comment: string) => {
       const set: SavedSet = {
         id: newSetId(),
-        name: trimmed,
         createdAt: new Date().toISOString(),
+        comment: comment.trim(),
         lines,
       }
       setSets((prev) => [set, ...prev])

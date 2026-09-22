@@ -12,9 +12,27 @@ export const SETS_KEY = 'baduchai.demo.sets.v1'
 
 export interface SavedSet {
   id: string
-  name: string
   createdAt: string
   lines: CartLine[]
+  /** Заметка покупателя: зачем этот набор. Необязательна. */
+  comment: string
+}
+
+/**
+ * Подпись набора не вводится вручную: дата и состав описывают его точнее
+ * и не требуют от покупателя ничего придумывать.
+ */
+export function describeSet(set: SavedSet, byId: Map<number, Product>): string {
+  const date = new Date(set.createdAt).toLocaleDateString('ru-RU', {
+    day: 'numeric',
+    month: 'long',
+  })
+  const names = set.lines
+    .map((l) => byId.get(l.source_id)?.name_short)
+    .filter((n): n is string => Boolean(n))
+  const head = names.slice(0, 2).join(', ')
+  const rest = names.length > 2 ? ` и ещё ${names.length - 2}` : ''
+  return names.length ? `${date} · ${head}${rest}` : `${date} · ${set.lines.length} поз.`
 }
 
 function safeParse<T>(raw: string | null, fallback: T): T {
@@ -66,8 +84,8 @@ export function loadSets(storage: Storage = localStorage): SavedSet[] {
     .filter((s): s is SavedSet => !!s && typeof s === 'object')
     .map((s) => ({
       id: String(s.id ?? ''),
-      name: String(s.name ?? 'Без названия'),
       createdAt: String(s.createdAt ?? ''),
+      comment: String(s.comment ?? ''),
       lines: sanitizeLines(s.lines),
     }))
     .filter((s) => s.id && s.lines.length > 0)

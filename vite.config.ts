@@ -5,5 +5,5 @@ export default defineConfig({
   // относительные пути — демо должно открываться и из подкаталога (GitHub Pages)
   base: './',
   plugins: [react()],
-  build: { target: 'es2020', assetsInlineLimit: 2048 },
+  build: { target: 'es2022', assetsInlineLimit: 2048 },
 })

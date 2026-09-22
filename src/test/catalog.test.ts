@@ -20,8 +20,9 @@ describe('снимок каталога', () => {
     for (const p of catalog.products) {
       expect(p.source_id, p.name_full).toBeTypeOf('number')
       expect(p.sku, p.name_full).toBeTruthy()
-      expect(p.name_full.length, p.name_full).toBeGreaterThan(0)
-      expect(p.name_short.length, p.name_full).toBeGreaterThan(0)
+      // у одного товара магазина название пустое — вместо него показывается артикул
+      expect(p.name_full.length, `пустое name_full у ${p.sku}`).toBeGreaterThan(0)
+      expect(p.name_short.length, `пустое name_short у ${p.sku}`).toBeGreaterThan(0)
       expect(p.category, p.name_full).toBeTruthy()
       expect(p.price_minor, p.name_full).toBeGreaterThan(0)
       expect(p.currency, p.name_full).toBeTruthy()

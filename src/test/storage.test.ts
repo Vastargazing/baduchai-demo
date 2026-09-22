@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { byId, catalog, index, CONTROL_LIST } from './helpers'
 import {
   loadCart, saveCart, loadSets, saveSets, restoreSet, sanitizeLines, newSetId,
-  CART_KEY, SETS_KEY, type SavedSet,
+  describeSet, CART_KEY, SETS_KEY, type SavedSet,
 } from '../lib/storage'
 import { buildCart, computeTotals, formatMoney, formatWeight } from '../lib/totals'
 import { parseOrderText, applicableRows } from '../lib/parseOrder'
@@ -67,14 +67,14 @@ describe('повтор закупки', () => {
   it('сохранённый набор загружается и пересчитывается', () => {
     const set: SavedSet = {
       id: newSetId(),
-      name: 'Ежемесячный шу',
       createdAt: new Date().toISOString(),
+      comment: 'Ежемесячный шу',
       lines: [{ source_id: 65038, qty: 2 }, { source_id: 44352, qty: 1 }],
     }
     saveSets([set])
     const loaded = loadSets()
     expect(loaded).toHaveLength(1)
-    expect(loaded[0].name).toBe('Ежемесячный шу')
+    expect(loaded[0].comment).toBe('Ежемесячный шу')
 
     const report = restoreSet(loaded[0].lines, byId)
     expect(report.restored).toHaveLength(2)
@@ -118,12 +118,13 @@ describe('итоги корзины', () => {
   })
 
   it('неизвестный вес не выдаётся за точный общий', () => {
-    const noWeight = catalog.products.find((p) => p.weight_g === null)!
+    // берём чай: только там магазин вообще публикует вес
+    const noWeight = catalog.products.find((p) => p.weight_expected && p.weight_g === null)!
     const totals = computeTotals(
       buildCart([{ source_id: 65038, qty: 1 }, { source_id: noWeight.source_id, qty: 1 }], byId),
     )
     expect(totals.knownWeightG).toBe(120)
-    expect(totals.unknownWeightItems).toBe(1)
+    expect(totals.unknownWeightItems.map((p) => p.source_id)).toEqual([noWeight.source_id])
     expect(totals.weightComplete).toBe(false)
   })
 
@@ -131,6 +132,14 @@ describe('итоги корзины', () => {
     const totals = computeTotals(buildCart([{ source_id: 65038, qty: 2 }], byId))
     expect(totals.weightComplete).toBe(true)
     expect(totals.knownWeightG).toBe(240)
+  })
+
+  it('у нечайных товаров отсутствие веса не считается пробелом', () => {
+    const item = catalog.products.find((p) => !p.weight_expected)
+    expect(item, 'в снимке нет нечайных товаров').toBeDefined()
+    const totals = computeTotals(buildCart([{ source_id: item!.source_id, qty: 1 }], byId))
+    expect(totals.unknownWeightItems).toEqual([])
+    expect(totals.weightComplete).toBe(true)
   })
 
   it('удалённые и нулевые позиции не учитываются', () => {
@@ -146,5 +155,46 @@ describe('итоги корзины', () => {
     expect(formatMoney(2050)).toBe('$20,50')
     expect(formatWeight(1154)).toBe('1,154 кг')
     expect(formatWeight(357)).toBe('357 г')
+  })
+})
+
+describe('подпись сохранённого набора', () => {
+  it('составляется сама из даты и состава — вручную ничего вводить не нужно', () => {
+    const set = {
+      id: 'set-1',
+      createdAt: '2026-09-22T10:00:00.000Z',
+      comment: '',
+      lines: [{ source_id: 65038, qty: 2 }, { source_id: 44352, qty: 1 }],
+    }
+    const label = describeSet(set, byId)
+    expect(label).toContain('сентября')
+    expect(label).toContain('БА')
+    expect(label).toContain('ХАО ХЭ')
+  })
+
+  it('длинный состав сворачивается', () => {
+    const set = {
+      id: 'set-2',
+      createdAt: '2026-09-22T10:00:00.000Z',
+      comment: '',
+      lines: [65038, 58812, 44352, 66448, 5936].map((source_id) => ({ source_id, qty: 1 })),
+    }
+    expect(describeSet(set, byId)).toContain('и ещё 3')
+  })
+
+  it('комментарий сохраняется и переживает перезагрузку', () => {
+    saveSets([
+      { id: 'set-3', createdAt: new Date().toISOString(), comment: 'для чайной', lines: [{ source_id: 65038, qty: 1 }] },
+    ])
+    expect(loadSets()[0].comment).toBe('для чайной')
+  })
+
+  it('набор без комментария тоже корректен', () => {
+    saveSets([
+      { id: 'set-4', createdAt: new Date().toISOString(), comment: '', lines: [{ source_id: 65038, qty: 1 }] },
+    ])
+    const loaded = loadSets()
+    expect(loaded).toHaveLength(1)
+    expect(loaded[0].comment).toBe('')
   })
 })

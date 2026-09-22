@@ -143,9 +143,10 @@ describe('вставка списка заказом', () => {
   })
 
   it('товар не в наличии не попадает в корзину молча', () => {
-    const out = [...byId.values()].find((p) => !p.in_stock)
+    // артикул однозначен, в отличие от названия: в большом каталоге имена повторяются
+    const out = [...byId.values()].find((p) => !p.in_stock && p.sku)
     expect(out, 'в снимке нет товара без наличия').toBeDefined()
-    const report = parseOrderText(index, `${out!.name_short} — 1`)
+    const report = parseOrderText(index, `${out!.sku} — 1`)
     expect(report.rows[0].status).toBe('unavailable')
     expect(applicableRows(report.rows)).toHaveLength(0)
   })

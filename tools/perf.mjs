@@ -11,6 +11,7 @@
  */
 import { chromium } from 'playwright'
 import { createServer } from 'node:http'
+import { gzipSync } from 'node:zlib'
 import { readFile, writeFile } from 'node:fs/promises'
 import { existsSync, statSync } from 'node:fs'
 import { execSync } from 'node:child_process'
@@ -34,12 +35,19 @@ function serve(dir) {
     const url = decodeURIComponent((req.url ?? '/').split('?')[0])
     let file = path.join(dir, url === '/' ? 'index.html' : url)
     if (!existsSync(file)) file = path.join(dir, 'index.html')
-    const body = await readFile(file)
-    res.writeHead(200, {
+    let body = await readFile(file)
+    const headers = {
       'Content-Type': MIME[path.extname(file)] ?? 'application/octet-stream',
-      'Content-Length': body.length,
       'Cache-Control': 'no-store',
-    })
+    }
+    // GitHub Pages отдаёт текстовые файлы сжатыми — иначе замер завышал трафик
+    const compressible = /\.(html|js|css|json|txt)$/i.test(file)
+    if (compressible && (req.headers['accept-encoding'] ?? '').includes('gzip')) {
+      body = gzipSync(body)
+      headers['Content-Encoding'] = 'gzip'
+    }
+    headers['Content-Length'] = body.length
+    res.writeHead(200, headers)
     res.end(body)
   })
   return new Promise((r) => server.listen(0, '127.0.0.1', () => r(server)))
@@ -235,7 +243,7 @@ async function main() {
       'load, мс': r1(median(runs.map((r) => r.load))),
       'каталог отрисован, мс': r1(median(runs.map((r) => r.catalogReady).filter(Boolean))),
       'запросов при первой загрузке': median(runs.map((r) => r.requests)),
-      'передано, КБ': r1(median(runs.map((r) => r.bytes)) / 1024),
+      'передано (сжато, как на GitHub Pages), КБ': r1(median(runs.map((r) => r.bytes)) / 1024),
     }
   }
 

@@ -1,11 +1,11 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
-import catalogJson from './data/catalog.json'
-import type { Catalog, CartLine, Product } from './lib/types'
-import { buildIndex, searchProducts } from './lib/match'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import type { Catalog, CartLine, CategoryNode, Product } from './lib/types'
+import { buildIndex, searchProducts, type ProductIndex } from './lib/match'
+import { buildCategoryTree, filterRows, filterByCategory, pathTo, type CategoryTree } from './lib/categories'
 import { parseOrderText } from './lib/parseOrder'
 import { parseWorkbook, type ImportOutcome } from './lib/importSheet'
 import { buildPriceTemplate } from './lib/xlsx'
-import { restoreSet } from './lib/storage'
+import { restoreSet, describeSet } from './lib/storage'
 import { formatMoney, formatWeight } from './lib/totals'
 import { useCart } from './state/useCart'
 import { Modal } from './components/Bits'
@@ -14,16 +14,11 @@ import { PreviewPanel, type ApplyMode } from './components/PreviewPanel'
 import { Checkout } from './components/Checkout'
 import './styles/app.css'
 
-const catalog = catalogJson as unknown as Catalog
-const ALL_PRODUCTS = catalog.products
-const INDEX = buildIndex(ALL_PRODUCTS)
-const BY_ID = new Map<number, Product>(ALL_PRODUCTS.map((p) => [p.source_id, p]))
-
-const SNAPSHOT_DATE = new Date(catalog.meta.fetched_at).toLocaleDateString('ru-RU', {
-  day: 'numeric',
-  month: 'long',
-  year: 'numeric',
-})
+/**
+ * Снимок каталога лежит отдельным файлом и подгружается при старте, а не вшит
+ * в бандл: так оболочка появляется сразу, а сам файл кешируется браузером.
+ */
+const CATALOG_URL = `${import.meta.env.BASE_URL}catalog.json`
 
 const SAMPLE_ORDER = `1. БА — 2 шт.
 2. СЮАНЬ — 1 шт.
@@ -31,26 +26,99 @@ const SAMPLE_ORDER = `1. БА — 2 шт.
 4. ДИСК БИ — 1 шт.
 5. ПУЭРИН — 1 шт.`
 
+/** Сколько карточек отрисовывать за раз. */
+const PAGE_SIZE = 48
+
 type Dialog = 'paste' | 'excel' | 'sets' | 'cart' | 'checkout' | null
 
 export default function App() {
-  const [query, setQuery] = useState('')
-  const [category, setCategory] = useState<string | null>(null)
-  const [dialog, setDialog] = useState<Dialog>(null)
-  const cart = useCart(BY_ID)
+  const [catalog, setCatalog] = useState<Catalog | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
-  const categoryCounts = useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const p of ALL_PRODUCTS) counts.set(p.category, (counts.get(p.category) ?? 0) + 1)
-    return counts
+  useEffect(() => {
+    let alive = true
+    fetch(CATALOG_URL)
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json()
+      })
+      .then((data: Catalog) => alive && setCatalog(data))
+      .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)))
+    return () => {
+      alive = false
+    }
   }, [])
 
-  const visible = useMemo(() => {
-    const base = category ? ALL_PRODUCTS.filter((p) => p.category === category) : ALL_PRODUCTS
-    return searchProducts(base, query)
-  }, [query, category])
+  if (error) {
+    return (
+      <div className="boot">
+        <h1 className="boot-title">Бадучай</h1>
+        <div className="note note-danger">Не удалось загрузить каталог: {error}</div>
+      </div>
+    )
+  }
+  if (!catalog) {
+    return (
+      <div className="boot">
+        <h1 className="boot-title">Бадучай</h1>
+        <p className="hint">Загружаем каталог…</p>
+      </div>
+    )
+  }
+  return <Shop catalog={catalog} />
+}
 
+function Shop({ catalog }: { catalog: Catalog }) {
+  const products = catalog.products
+  const index = useMemo<ProductIndex>(() => buildIndex(products), [products])
+  const byId = useMemo(() => new Map<number, Product>(products.map((p) => [p.source_id, p])), [products])
+  const tree = useMemo(() => buildCategoryTree(catalog.categories), [catalog.categories])
+
+  const snapshotDate = useMemo(
+    () =>
+      new Date(catalog.meta.fetched_at).toLocaleDateString('ru-RU', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      }),
+    [catalog.meta.fetched_at],
+  )
+
+  const [query, setQuery] = useState('')
+  const [category, setCategory] = useState<number | null>(null)
+  const [dialog, setDialog] = useState<Dialog>(null)
+  const cart = useCart(byId)
+
+  // поиск по полутора тысячам позиций — откладываем, чтобы ввод не дёргался
+  const deferredQuery = useDeferredValue(query)
+  const visible = useMemo(
+    () => searchProducts(filterByCategory(products, category), deferredQuery),
+    [products, category, deferredQuery],
+  )
+
+  // Каталог большой: показываем порцию и добавляем следующие по мере прокрутки.
+  const [limit, setLimit] = useState(PAGE_SIZE)
+  useEffect(() => setLimit(PAGE_SIZE), [category, deferredQuery])
+  const shown = useMemo(() => visible.slice(0, limit), [visible, limit])
+  const sentinel = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const node = sentinel.current
+    if (!node || limit >= visible.length) return
+    const io = new IntersectionObserver(
+      (entries) => entries[0]?.isIntersecting && setLimit((n) => n + PAGE_SIZE),
+      { rootMargin: '600px' },
+    )
+    io.observe(node)
+    return () => io.disconnect()
+  }, [limit, visible.length])
+
+  const setQty = cart.setQty
+  const rows = useMemo(() => filterRows(tree, category), [tree, category])
+  const crumbs = useMemo(() => pathTo(tree, category), [tree, category])
   const { totals } = cart
+
+  const ctx = { catalog, index, byId, tree, snapshotDate, cart }
 
   return (
     <>
@@ -58,16 +126,16 @@ export default function App() {
         <strong>Демонстрационный прототип.</strong>{' '}
         <span className="demo-full">
           Настоящие заказы не принимаются и не оплачиваются. Данные каталога — снимок публичного
-          сайта baduchai.ru от {SNAPSHOT_DATE}.
+          сайта baduchai.ru от {snapshotDate}.
         </span>
-        <span className="demo-short">Заказы не принимаются. Каталог от {SNAPSHOT_DATE}.</span>
+        <span className="demo-short">Заказы не принимаются. Каталог от {snapshotDate}.</span>
       </div>
 
       <header className="header">
         <div className="header-inner">
           <div className="brand">
             <span className="brand-mark">Бадучай</span>
-            <span className="brand-sub">чайный каталог · прототип</span>
+            <span className="brand-sub">каталог · прототип</span>
           </div>
 
           <div className="search-wrap">
@@ -109,35 +177,20 @@ export default function App() {
 
       <main className="layout has-mobile-bar">
         <section>
-          <div className="toolbar">
-            <div className="chips">
-              <button
-                className="chip"
-                aria-pressed={category === null}
-                onClick={() => setCategory(null)}
-              >
-                Все категории <span className="chip-count">{ALL_PRODUCTS.length}</span>
-              </button>
-              {catalog.categories.map((c) => (
-                <button
-                  key={c}
-                  className="chip"
-                  aria-pressed={category === c}
-                  data-testid={`chip-${c}`}
-                  onClick={() => setCategory((prev) => (prev === c ? null : c))}
-                >
-                  {c} <span className="chip-count">{categoryCounts.get(c) ?? 0}</span>
-                </button>
-              ))}
-            </div>
-          </div>
+          <CategoryFilter
+            rows={rows}
+            crumbs={crumbs}
+            selected={category}
+            total={products.length}
+            onSelect={setCategory}
+          />
 
           <p className="result-line" data-testid="result-count">
             {visible.length === 0
               ? 'Ничего не найдено'
-              : `Показано ${visible.length} из ${ALL_PRODUCTS.length} товаров`}
+              : `Найдено ${visible.length} из ${products.length} товаров`}
+            {visible.length > shown.length && `, показано ${shown.length}`}
             {query && ` по запросу «${query}»`}
-            {category && `, категория «${category}»`}
           </p>
 
           {visible.length === 0 ? (
@@ -145,20 +198,29 @@ export default function App() {
               <div className="empty">
                 <span className="empty-mark">⌕</span>
                 Ничего не нашлось. Попробуйте часть названия, артикул (например, SHU-47) или
-                сбросьте фильтр категории.
+                выберите «Весь каталог».
               </div>
             </div>
           ) : (
-            <div className="grid" data-testid="grid">
-              {visible.map((p) => (
-                <ProductCard
-                  key={p.source_id}
-                  product={p}
-                  qty={cart.qtyOf(p.source_id)}
-                  onQty={(next) => cart.setQty(p.source_id, next)}
-                />
-              ))}
-            </div>
+            <>
+              <div className="grid" data-testid="grid">
+                {shown.map((p) => (
+                  <ProductCard
+                    key={p.source_id}
+                    product={p}
+                    qty={cart.qtyOf(p.source_id)}
+                    onQty={setQty}
+                  />
+                ))}
+              </div>
+              {limit < visible.length && (
+                <div className="more" ref={sentinel}>
+                  <button className="btn" onClick={() => setLimit((n) => n + PAGE_SIZE)} data-testid="show-more">
+                    Показать ещё ({visible.length - shown.length})
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </section>
 
@@ -167,7 +229,7 @@ export default function App() {
         </aside>
       </main>
 
-      <Footer />
+      <Footer catalog={catalog} snapshotDate={snapshotDate} />
 
       <div className="mobile-bar">
         <div className="mobile-bar-info">
@@ -182,11 +244,9 @@ export default function App() {
         </button>
       </div>
 
-      {dialog === 'paste' && (
-        <PasteDialog cart={cart} onClose={() => setDialog(null)} />
-      )}
-      {dialog === 'excel' && <ExcelDialog cart={cart} onClose={() => setDialog(null)} />}
-      {dialog === 'sets' && <SetsDialog cart={cart} onClose={() => setDialog(null)} />}
+      {dialog === 'paste' && <PasteDialog ctx={ctx} onClose={() => setDialog(null)} />}
+      {dialog === 'excel' && <ExcelDialog ctx={ctx} onClose={() => setDialog(null)} />}
+      {dialog === 'sets' && <SetsDialog ctx={ctx} onClose={() => setDialog(null)} />}
       {dialog === 'cart' && (
         <Modal
           title="Корзина"
@@ -222,6 +282,58 @@ export default function App() {
 }
 
 type CartApi = ReturnType<typeof useCart>
+interface Ctx {
+  catalog: Catalog
+  index: ProductIndex
+  byId: Map<number, Product>
+  tree: CategoryTree
+  snapshotDate: string
+  cart: CartApi
+}
+
+/**
+ * Фильтр повторяет устройство меню исходного сайта: рубрики верхнего уровня,
+ * под ними — подрубрики выбранной, и так далее вглубь.
+ */
+function CategoryFilter({
+  rows,
+  crumbs,
+  selected,
+  total,
+  onSelect,
+}: {
+  rows: CategoryNode[][]
+  crumbs: CategoryNode[]
+  selected: number | null
+  total: number
+  onSelect: (id: number | null) => void
+}) {
+  return (
+    <div className="filter" data-testid="category-filter">
+      {rows.map((row, level) => (
+        <div className={`chips${level > 0 ? ' chips-sub' : ''}`} key={level}>
+          {level === 0 && (
+            <button className="chip" aria-pressed={selected === null} onClick={() => onSelect(null)}>
+              Весь каталог <span className="chip-count">{total}</span>
+            </button>
+          )}
+          {level > 0 && <span className="chips-label">в рубрике «{crumbs[level - 1]?.name}»:</span>}
+          {row.map((c) => (
+            <button
+              key={c.id}
+              className="chip"
+              aria-pressed={crumbs.some((x) => x.id === c.id)}
+              data-testid={`chip-${c.slug}`}
+              onClick={() => onSelect(crumbs.some((x) => x.id === c.id) ? (c.parent ?? null) : c.id)}
+            >
+              {c.name} <span className="chip-count">{c.count}</span>
+            </button>
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+}
 
 function CartPanel({
   cart,
@@ -233,7 +345,7 @@ function CartPanel({
   inModal?: boolean
 }) {
   const { totals } = cart
-  const [setName, setSetName] = useState('')
+  const [comment, setComment] = useState('')
   const [saved, setSaved] = useState<string | null>(null)
 
   const body = (
@@ -256,8 +368,9 @@ function CartPanel({
                 <div>
                   <div className="cart-line-name">{item.product.name_short}</div>
                   <div className="cart-line-meta">
-                    {item.product.sku} · {unitLabel(item.product)} ·{' '}
-                    {formatMoney(item.product.price_minor, totals.currencySymbol)} за упаковку
+                    {item.product.sku ? `${item.product.sku} · ` : ''}
+                    {unitLabel(item.product)} ·{' '}
+                    {formatMoney(item.product.price_minor, totals.currencySymbol)} за штуку
                   </div>
                   <div className="cart-line-controls">
                     <div className="stepper filled" style={{ transform: 'scale(0.9)', transformOrigin: 'left' }}>
@@ -304,9 +417,13 @@ function CartPanel({
           </div>
 
           {!totals.weightComplete && (
-            <div className="note note-warn" style={{ marginTop: 10 }}>
-              У {totals.unknownWeightItems} поз. вес не опубликован в магазине, поэтому общий вес
-              показан как нижняя граница, а не как точный.
+            <div className="note note-warn" style={{ marginTop: 10 }} data-testid="weight-note">
+              Магазин не публикует вес для{' '}
+              {totals.unknownWeightItems
+                .map((p) => `«${p.name_short}»${p.sku ? ` (${p.sku})` : ''}`)
+                .join(', ')}
+              . Поэтому общий вес показан как нижняя граница — остальные позиции в нём учтены
+              полностью.
             </div>
           )}
           <div className="note note-info" style={{ marginTop: 8 }}>
@@ -321,18 +438,18 @@ function CartPanel({
               <input
                 className="field"
                 style={{ flex: 1, minWidth: 140 }}
-                placeholder="Название набора"
-                value={setName}
-                aria-label="Название набора для повторной закупки"
-                onChange={(e) => { setSetName(e.target.value); setSaved(null) }}
+                placeholder="Комментарий к набору (необязательно)"
+                value={comment}
+                aria-label="Комментарий к сохраняемому набору"
+                onChange={(e) => { setComment(e.target.value); setSaved(null) }}
               />
               <button
                 className="btn"
                 data-testid="save-set"
                 onClick={() => {
-                  const s = cart.saveCurrentSet(setName)
-                  setSetName('')
-                  setSaved(`Набор «${s.name}» сохранён на этом устройстве`)
+                  cart.saveCurrentSet(comment)
+                  setComment('')
+                  setSaved('Набор сохранён на этом устройстве — его можно повторить через «Наборы».')
                 }}
               >
                 Сохранить набор
@@ -358,22 +475,20 @@ function CartPanel({
   )
 }
 
-function PasteDialog({ cart, onClose }: { cart: CartApi; onClose: () => void }) {
+function PasteDialog({ ctx, onClose }: { ctx: Ctx; onClose: () => void }) {
   const [text, setText] = useState('')
   const [applied, setApplied] = useState<string | null>(null)
-  const report = useMemo(() => parseOrderText(INDEX, text), [text])
+  const report = useMemo(() => parseOrderText(ctx.index, text), [ctx.index, text])
 
   const apply = useCallback(
     (lines: CartLine[], mode: ApplyMode) => {
-      cart.applyLines(lines, mode)
+      ctx.cart.applyLines(lines, mode)
       const packages = lines.reduce((s, l) => s + l.qty, 0)
       setApplied(
-        mode === 'replace'
-          ? `Корзина заменена: ${lines.length} поз., ${packages} упак. Повторное применение этого списка не нужно.`
-          : `Добавлено к корзине: ${lines.length} поз., ${packages} упак. Повторное применение этого списка не нужно.`,
+        `${mode === 'replace' ? 'Корзина заменена' : 'Добавлено к корзине'}: ${lines.length} поз., ${packages} упак. Повторное применение этого списка не нужно.`,
       )
     },
-    [cart],
+    [ctx.cart],
   )
 
   return (
@@ -416,7 +531,7 @@ function PasteDialog({ cart, onClose }: { cart: CartApi; onClose: () => void }) 
   )
 }
 
-function ExcelDialog({ cart, onClose }: { cart: CartApi; onClose: () => void }) {
+function ExcelDialog({ ctx, onClose }: { ctx: Ctx; onClose: () => void }) {
   const [outcome, setOutcome] = useState<ImportOutcome | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [applied, setApplied] = useState<string | null>(null)
@@ -424,14 +539,14 @@ function ExcelDialog({ cart, onClose }: { cart: CartApi; onClose: () => void }) 
   const fileRef = useRef<HTMLInputElement>(null)
 
   const download = () => {
-    const bytes = buildPriceTemplate(ALL_PRODUCTS)
+    const bytes = buildPriceTemplate(ctx.catalog.products)
     const blob = new Blob([bytes as unknown as BlobPart], {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `baduchai-prays-${catalog.meta.fetched_at.slice(0, 10)}.xlsx`
+    a.download = `baduchai-prays-${ctx.catalog.meta.fetched_at.slice(0, 10)}.xlsx`
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -442,7 +557,7 @@ function ExcelDialog({ cart, onClose }: { cart: CartApi; onClose: () => void }) 
     setFileName(file.name)
     try {
       const buf = new Uint8Array(await file.arrayBuffer())
-      setOutcome(parseWorkbook(INDEX, buf))
+      setOutcome(parseWorkbook(ctx.index, buf))
     } catch (e) {
       setOutcome(null)
       setError(e instanceof Error ? e.message : 'Не удалось прочитать файл')
@@ -494,7 +609,7 @@ function ExcelDialog({ cart, onClose }: { cart: CartApi; onClose: () => void }) 
           mergedCount={outcome.mergedCount}
           appliedNote={applied}
           onApply={(lines, mode) => {
-            cart.applyLines(lines, mode)
+            ctx.cart.applyLines(lines, mode)
             const packages = lines.reduce((s, l) => s + l.qty, 0)
             setApplied(
               `${mode === 'replace' ? 'Корзина заменена' : 'Добавлено к корзине'}: ${lines.length} поз., ${packages} упак. Повторный импорт того же файла не требуется.`,
@@ -510,25 +625,26 @@ function ExcelDialog({ cart, onClose }: { cart: CartApi; onClose: () => void }) 
   )
 }
 
-function SetsDialog({ cart, onClose }: { cart: CartApi; onClose: () => void }) {
+function SetsDialog({ ctx, onClose }: { ctx: Ctx; onClose: () => void }) {
   const [note, setNote] = useState<string | null>(null)
+  const { cart, byId } = ctx
 
   const load = (id: string, mode: ApplyMode) => {
     const set = cart.sets.find((s) => s.id === id)
     if (!set) return
-    const report = restoreSet(set.lines, BY_ID)
+    const report = restoreSet(set.lines, byId)
     cart.applyLines(report.lines, mode)
 
     const parts = [
-      `${mode === 'replace' ? 'Корзина заменена' : 'Добавлено'} из набора «${set.name}»: ${report.restored.length} поз.`,
+      `${mode === 'replace' ? 'Корзина заменена' : 'Добавлено'}: ${report.restored.length} поз.`,
     ]
     if (report.missing.length) {
       parts.push(`Нет в текущем снимке каталога (${report.missing.length}): id ${report.missing.join(', ')} — эти товары пропущены.`)
     }
     if (report.unavailable.length) {
-      parts.push(`Стали недоступны: ${report.unavailable.map((p) => `${p.name_short} (${p.sku})`).join(', ')} — не добавлены.`)
+      parts.push(`Стали недоступны: ${report.unavailable.map((p) => `${p.name_short}${p.sku ? ` (${p.sku})` : ''}`).join(', ')} — не добавлены.`)
     }
-    parts.push('Цены и вес пересчитаны по снимку каталога от ' + SNAPSHOT_DATE + '.')
+    parts.push(`Цены и вес пересчитаны по снимку каталога от ${ctx.snapshotDate}.`)
     setNote(parts.join(' '))
   }
 
@@ -549,14 +665,16 @@ function SetsDialog({ cart, onClose }: { cart: CartApi; onClose: () => void }) {
       ) : (
         <ul className="set-list" data-testid="set-list">
           {cart.sets.map((s) => {
-            const report = restoreSet(s.lines, BY_ID)
+            const report = restoreSet(s.lines, byId)
             const amount = report.restored.reduce((sum, r) => sum + r.product.price_minor * r.qty, 0)
+            const packages = report.restored.reduce((sum, r) => sum + r.qty, 0)
             return (
               <li className="set-item" key={s.id}>
-                <div className="set-name">{s.name}</div>
+                <div className="set-name">{describeSet(s, byId)}</div>
+                {s.comment && <div className="set-comment">{s.comment}</div>}
                 <div className="set-meta">
-                  {new Date(s.createdAt).toLocaleString('ru-RU')} · {s.lines.length} поз. · по текущему
-                  снимку {formatMoney(amount)}
+                  {new Date(s.createdAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })} ·{' '}
+                  {s.lines.length} поз., {packages} упак. · по текущему снимку {formatMoney(amount)}
                   {report.missing.length > 0 && ` · ${report.missing.length} исчезло из каталога`}
                   {report.unavailable.length > 0 && ` · ${report.unavailable.length} нет в наличии`}
                 </div>
@@ -576,7 +694,8 @@ function SetsDialog({ cart, onClose }: { cart: CartApi; onClose: () => void }) {
   )
 }
 
-function Footer() {
+function Footer({ catalog, snapshotDate }: { catalog: Catalog; snapshotDate: string }) {
+  const teaNoWeight = catalog.meta.tea_without_weight ?? []
   return (
     <footer className="footer">
       <div className="footer-grid">
@@ -590,16 +709,18 @@ function Footer() {
           <strong>Источник каталога</strong>
           <br />
           Публичные данные{' '}
-          <a href="https://baduchai.ru/" target="_blank" rel="noreferrer noopener">baduchai.ru</a>,
-          рубрика «ЧАЙ». Снимок от {SNAPSHOT_DATE}: {catalog.meta.product_count} товаров,{' '}
-          {catalog.categories.length} категорий. Цены и наличие — как опубликованы на эту дату.
+          <a href="https://baduchai.ru/" target="_blank" rel="noreferrer noopener">baduchai.ru</a>.
+          Снимок от {snapshotDate}: {catalog.meta.product_count} товаров,{' '}
+          {catalog.meta.category_count} рубрик. Цены и наличие — как опубликованы на эту дату.
         </div>
         <div>
           <strong>Ограничения снимка</strong>
           <br />
-          Вес не опубликован у {ALL_PRODUCTS.filter((p) => p.weight_g === null).length} товаров — он
-          не подставляется и не включается в точный итог. Оптовые цены, скидки, остатки и отзывы не
-          показываются, так как магазин их не публикует.
+          {teaNoWeight.length > 0 && (
+            <>Вес не опубликован у {teaNoWeight.length} чайных позиций — он не подставляется и не
+            включается в точный итог. </>
+          )}
+          Оптовые цены, скидки, остатки и отзывы не показываются, так как магазин их не публикует.
         </div>
       </div>
     </footer>

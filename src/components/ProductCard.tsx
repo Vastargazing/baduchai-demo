@@ -1,25 +1,41 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import type { Product } from '../lib/types'
 import { formatMoney } from '../lib/totals'
 import { QtyStepper } from './Bits'
 
 /** Подпись единицы продажи. Количество всегда означает именно её. */
 export function unitLabel(p: Product): string {
-  if (p.weight_g === null) return `1 ${p.unit} · вес не указан`
-  const w = p.weight_g >= 1000 ? `${p.weight_g / 1000} кг` : `${p.weight_g} г`
-  return `1 ${p.unit} · ${w}`
+  if (p.weight_g !== null) {
+    const w = p.weight_g >= 1000 ? `${p.weight_g / 1000} кг` : `${p.weight_g} г`
+    return `1 ${p.unit} · ${w}`
+  }
+  // Для чайника или браслета вес не единица продажи — отсутствие веса там не пробел.
+  if (!p.weight_expected) return `1 ${p.unit}`
+  return `1 ${p.unit} · вес не указан`
 }
 
-export function ProductCard({
+/** Метка фасовки в карточке: предупреждаем только там, где вес действительно ждут. */
+function packTag(p: Product): { text: string; warn: boolean } {
+  if (p.weight_g !== null) return { text: `${p.unit} ${p.weight_g} г`, warn: false }
+  if (!p.weight_expected) return { text: `1 ${p.unit}`, warn: false }
+  return { text: p.pack_label ?? 'фасовка не указана', warn: true }
+}
+
+/**
+ * Карточка мемоизирована, а onQty принимает id товара: иначе смена количества
+ * у одной позиции перерисовывала бы весь каталог.
+ */
+export const ProductCard = memo(function ProductCard({
   product,
   qty,
   onQty,
 }: {
   product: Product
   qty: number
-  onQty: (next: number) => void
+  onQty: (sourceId: number, next: number) => void
 }) {
   const [open, setOpen] = useState(false)
+  const pack = packTag(product)
   const desc = product.description || product.short_description
   const long = desc.length > 150
   const shown = open || !long ? desc : `${desc.slice(0, 150).trimEnd()}…`
@@ -49,13 +65,11 @@ export function ProductCard({
         <div className="card-full">{product.name_full}</div>
 
         <div className="card-meta">
-          <span className="tag">{product.category}</span>
-          <span className={`tag ${product.weight_g === null ? 'tag-unknown' : 'tag-pack'}`}>
-            {product.weight_g === null
-              ? (product.pack_label ?? 'фасовка не указана')
-              : `${product.unit} ${product.weight_g} г`}
+          <span className="tag" title={product.category_path.join(' → ')}>
+            {product.category}
           </span>
-          <span className="card-sku">{product.sku}</span>
+          <span className={`tag ${pack.warn ? 'tag-unknown' : 'tag-pack'}`}>{pack.text}</span>
+          {product.sku && <span className="card-sku">{product.sku}</span>}
         </div>
 
         {desc && (
@@ -78,7 +92,7 @@ export function ProductCard({
           </div>
           <QtyStepper
             value={qty}
-            onChange={onQty}
+            onChange={(next) => onQty(product.source_id, next)}
             disabled={!product.in_stock}
             label={product.name_short}
           />
@@ -86,4 +100,4 @@ export function ProductCard({
       </div>
     </article>
   )
-}
+})

@@ -35,6 +35,32 @@ export function buildIndex(products: Product[]): ProductIndex {
   return { products, bySku, byName, byAlias, byCjk }
 }
 
+interface Searchable {
+  name: string
+  full: string
+  aliases: string
+  sku: string
+}
+
+/**
+ * Нормализованные поля считаются один раз на товар: без кеша каждый запрос
+ * прогонял регулярные выражения по всему каталогу заново.
+ */
+const searchableCache = new Map<number, Searchable>()
+
+function searchable(p: Product): Searchable {
+  const hit = searchableCache.get(p.source_id)
+  if (hit) return hit
+  const value: Searchable = {
+    name: normName(p.name_short),
+    full: normName(p.name_full),
+    aliases: p.aliases.map(normName).join(' '),
+    sku: p.sku ? normSku(p.sku) : '',
+  }
+  searchableCache.set(p.source_id, value)
+  return value
+}
+
 const uniq = (list: Product[]) => [...new Map(list.map((p) => [p.source_id, p])).values()]
 
 /**
@@ -84,9 +110,10 @@ export function matchProduct(index: ProductIndex, rawQuery: string): MatchResult
     return { kind: 'ambiguous', candidates: uniq(skuHits), via: 'sku' }
 
   // 6. Подстрока — уже не точное совпадение, подтверждаем у человека
+  const glued = key.split(' ').join('')
   const sub = index.products.filter((p) => {
-    const hay = `${normName(p.name_short)} ${normName(p.name_full)}`
-    return hay.includes(key) || normName(p.name_short).split(' ').join('') === key.split(' ').join('')
+    const { name, full } = searchable(p)
+    return `${name} ${full}`.includes(key) || name.split(' ').join('') === glued
   })
   if (sub.length === 1) return { kind: 'fuzzy', candidates: sub, via: 'fuzzy' }
   if (sub.length > 1) return { kind: 'ambiguous', candidates: uniq(sub).slice(0, 8), via: 'fuzzy' }
@@ -96,10 +123,8 @@ export function matchProduct(index: ProductIndex, rawQuery: string): MatchResult
   if (limit > 0) {
     const scored: { p: Product; d: number }[] = []
     for (const p of index.products) {
-      const d = Math.min(
-        levenshtein(key, normName(p.name_short), limit),
-        levenshtein(key, normName(p.name_full), limit),
-      )
+      const { name, full } = searchable(p)
+      const d = Math.min(levenshtein(key, name, limit), levenshtein(key, full, limit))
       if (d <= limit) scored.push({ p, d })
     }
     scored.sort((a, b) => a.d - b.d)
@@ -112,6 +137,7 @@ export function matchProduct(index: ProductIndex, rawQuery: string): MatchResult
   return { kind: 'not_found', candidates: [] }
 }
 
+
 /** Живой поиск по каталогу: название, артикул, псевдонимы. */
 export function searchProducts(products: Product[], rawQuery: string): Product[] {
   const query = rawQuery.trim()
@@ -122,10 +148,7 @@ export function searchProducts(products: Product[], rawQuery: string): Product[]
 
   const scored: { p: Product; score: number }[] = []
   for (const p of products) {
-    const name = normName(p.name_short)
-    const full = normName(p.name_full)
-    const aliases = p.aliases.map(normName).join(' ')
-    const sku = p.sku ? normSku(p.sku) : ''
+    const { name, full, aliases, sku } = searchable(p)
     const hay = `${name} ${full} ${aliases}`
 
     let score = 0

@@ -1,4 +1,4 @@
-import type { Product } from './types'
+import type { MatchResult, Product } from './types'
 import { matchProduct, type ProductIndex } from './match'
 import { parseQuantity, isUnitWord } from './qty'
 
@@ -89,8 +89,10 @@ export function parseOrderText(index: ProductIndex, text: string): ParseReport {
     const candidates = splitCandidates(stripped)
 
     // Берём первое разбиение, которое вообще нашло товар.
+    // Отдельного поиска по всей строке не делаем: последний вариант разбиения
+    // и есть вся строка, а лишний проход по каталогу стоит дорого.
     let chosen: { name: string; qty: string } | null = null
-    let result = matchProduct(index, stripped)
+    let result: MatchResult = { kind: 'not_found', candidates: [] }
     for (const c of candidates) {
       const r = matchProduct(index, c.name)
       if (r.kind === 'exact') {

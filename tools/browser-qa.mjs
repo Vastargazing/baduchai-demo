@@ -6,6 +6,7 @@
  */
 import { chromium } from 'playwright'
 import { createServer } from 'node:http'
+import { gzipSync } from 'node:zlib'
 import { readFile, mkdir, writeFile, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
@@ -111,6 +112,7 @@ async function main() {
   page.on('console', (m) => m.type() === 'error' && consoleErrors.push(m.text()))
   page.on('pageerror', (e) => consoleErrors.push(String(e)))
   await page.goto(base, { waitUntil: 'networkidle' })
+  await page.locator('[data-testid="product-card"]').first().waitFor()
   activePage = page
 
   await check('каталог открывается и показывает товары', async () => {
@@ -161,16 +163,45 @@ async function main() {
     return 'показано сообщение «Ничего не найдено»'
   })
 
-  await check('фильтр по категории', async () => {
+  await check('фильтр по рубрике верхнего уровня', async () => {
     await T(page, 'search').fill('')
-    await page.locator('[data-testid="chip-Шу Пуэр"]').click()
-    await page.waitForTimeout(120)
+    await page.locator('[data-testid="chip-chaj"]').click()
+    await page.waitForTimeout(200)
     const n = await T(page, 'product-card').count()
-    const cats = await page.locator('[data-testid="product-card"] .tag').first().innerText()
-    eq(cats, 'Шу Пуэр', 'категория первой карточки')
-    assert(n > 5 && n < 40, `в категории ${n} товаров`)
-    await page.locator('[data-testid="chip-Шу Пуэр"]').click()
-    return `${n} товаров в «Шу Пуэр»`
+    assert(n > 20 && n < 200, `в рубрике ЧАЙ ${n} товаров`)
+    return `${n} товаров в «ЧАЙ»`
+  })
+
+  await check('вложенные рубрики раскрываются, как в меню сайта', async () => {
+    // после выбора «ЧАЙ» должен появиться второй ряд с подрубриками
+    const sub = page.locator('.chips-sub').first()
+    assert(await sub.isVisible(), 'второй ряд рубрик не появился')
+    const names = await sub.innerText()
+    for (const expected of ['Шу Пуэр', 'Улун', 'Красный']) {
+      assert(names.includes(expected), `нет подрубрики ${expected}: ${names}`)
+    }
+
+    await page.locator('[data-testid="chip-ulun"]').click()
+    await page.waitForTimeout(200)
+    const rows = await page.locator('.chips-sub').count()
+    eq(rows, 2, 'рядов подрубрик после выбора «Улун»')
+    const deep = await page.locator('.chips-sub').nth(1).innerText()
+    assert(/Цин Хо/.test(deep), `нет третьего уровня: ${deep}`)
+    return 'ЧАЙ → Улун → Цин Хо: три уровня'
+  })
+
+  await check('родительская рубрика включает товары вложенных', async () => {
+    await page.locator('[data-testid="chip-czin-ho-lyogkaya-prozharka"]').click()
+    await page.waitForTimeout(200)
+    const deepCount = await T(page, 'product-card').count()
+    await page.locator('[data-testid="chip-chaj"]').click() // снимаем выбор до ЧАЙ
+    await page.waitForTimeout(200)
+    await page.locator('[data-testid="chip-chaj"]').click()
+    await page.waitForTimeout(200)
+    const all = await T(page, 'product-card').count()
+    assert(deepCount > 0, 'во вложенной рубрике пусто')
+    assert(all > deepCount, `родительская рубрика (${all}) не больше вложенной (${deepCount})`)
+    return `Цин Хо: ${deepCount}, весь каталог: ${all}`
   })
 
   await check('ввод количества и кнопки плюс/минус в каталоге', async () => {
@@ -193,6 +224,7 @@ async function main() {
   await check('корзина восстанавливается после перезагрузки', async () => {
     const before = await totalsOf(page)
     await page.reload({ waitUntil: 'networkidle' })
+    await page.locator('[data-testid="product-card"]').first().waitFor()
     const after = await totalsOf(page)
     eq(after.packages, before.packages, 'упаковок после перезагрузки')
     eq(after.amount, before.amount, 'сумма после перезагрузки')
@@ -351,6 +383,47 @@ async function main() {
     return 'позиция удалена, итоги пересчитаны'
   })
 
+  await check('предупреждение о весе называет конкретные позиции', async () => {
+    // БУ ЧЖИ ДАО (SHU-50) вес публикует, БИН ДАО ГУН ТИН (SHU-40) — нет.
+    // Сообщение должно называть вторую позицию и не трогать первую.
+    await T(page, 'open-paste').click()
+    await T(page, 'paste-input').fill('SHU-50 — 1\nSHU-40 — 1')
+    await page.waitForTimeout(300)
+    await T(page, 'apply-replace').click()
+    await page.waitForTimeout(150)
+    await page.locator('.modal-foot .btn').click()
+
+    const note = await T(page, 'weight-note').first().innerText()
+    assert(/SHU-40/.test(note), `в предупреждении нет SHU-40: ${note}`)
+    assert(!/SHU-50/.test(note), `в предупреждении зря упомянут SHU-50: ${note}`)
+    return note.replace(/\s+/g, ' ').slice(0, 90)
+  })
+
+  await check('у товара с опубликованным весом предупреждения нет', async () => {
+    await T(page, 'open-paste').click()
+    await T(page, 'paste-input').fill('SHU-50 — 1')
+    await page.waitForTimeout(300)
+    await T(page, 'apply-replace').click()
+    await page.waitForTimeout(150)
+    await page.locator('.modal-foot .btn').click()
+    eq(await T(page, 'weight-note').count(), 0, 'блоков предупреждения о весе')
+    eq((await totalsOf(page)).weight, '357 г', 'вес БУ ЧЖИ ДАО')
+    return 'вес показан точно, без оговорок'
+  })
+
+  await check('нечайный товар не считается позицией без веса', async () => {
+    await T(page, 'search').fill('ЧАЙНИКИ')
+    await page.waitForTimeout(200)
+    await page.locator('[data-testid="chip-chajniki"]').click()
+    await page.waitForTimeout(250)
+    await T(page, 'search').fill('')
+    await page.waitForTimeout(250)
+    await T(page, 'product-card').first().locator('.stepper button').nth(1).click()
+    await page.waitForTimeout(200)
+    eq(await T(page, 'weight-note').count(), 0, 'предупреждений о весе для чайника')
+    return 'для предметов вес не считается пробелом'
+  })
+
   // ── Excel ────────────────────────────────────────────────
   let templatePath = null
   await check('скачивание прайса-шаблона .xlsx', async () => {
@@ -428,7 +501,7 @@ async function main() {
 
     await T(page, 'open-cart').click()
     await page.waitForTimeout(150)
-    await page.locator('.modal input[placeholder="Название набора"]').fill('Ежемесячная закупка')
+    await page.locator('.modal input[aria-label="Комментарий к сохраняемому набору"]').fill('Ежемесячная закупка')
     await page.locator('.modal [data-testid="save-set"]').click()
     await page.waitForTimeout(120)
     await page.locator('.modal-head button').click()
@@ -456,13 +529,45 @@ async function main() {
     return `набор восстановлен: ${t.positions} поз. / ${t.amount}`
   })
 
-  await check('наборы переживают перезагрузку', async () => {
-    await page.reload({ waitUntil: 'networkidle' })
-    await T(page, 'open-sets').click()
-    await page.waitForTimeout(200)
-    eq(await page.locator('[data-testid="set-list"] .set-item').count(), 1, 'наборов после перезагрузки')
+  await check('набор сохраняется без ввода названия', async () => {
+    await T(page, 'open-paste').click()
+    await T(page, 'paste-input').fill('SHU-32 — 2')
+    await page.waitForTimeout(250)
+    await T(page, 'apply-replace').click()
+    await page.waitForTimeout(150)
     await page.locator('.modal-foot .btn').click()
-    return 'набор сохранён между сессиями'
+
+    await T(page, 'open-cart').click()
+    await page.waitForTimeout(200)
+    // поля «название набора» больше нет — сохраняем как есть
+    eq(await page.locator('.modal input[placeholder*="Название"]').count(), 0, 'полей «название набора»')
+    await page.locator('.modal [data-testid="save-set"]').click()
+    await page.waitForTimeout(200)
+    await page.locator('.modal-head button').click()
+
+    await T(page, 'open-sets').click()
+    await page.waitForTimeout(250)
+    const label = await page.locator('[data-testid="set-list"] .set-name').first().innerText()
+    assert(/ХАО ХЭ/.test(label), `подпись набора не описывает состав: ${label}`)
+    await page.locator('.modal-foot .btn').click()
+    return `подпись сформирована сама: «${label}»`
+  })
+
+  await check('наборы переживают перезагрузку', async () => {
+    await T(page, 'open-sets').click()
+    await page.waitForTimeout(250)
+    const before = await page.locator('[data-testid="set-list"] .set-item').count()
+    assert(before > 0, 'до перезагрузки наборов нет')
+    await page.locator('.modal-foot .btn').click()
+
+    await page.reload({ waitUntil: 'networkidle' })
+    await page.locator('[data-testid="product-card"]').first().waitFor()
+    await T(page, 'open-sets').click()
+    await page.waitForTimeout(250)
+    const after = await page.locator('[data-testid="set-list"] .set-item').count()
+    eq(after, before, 'наборов после перезагрузки')
+    await page.locator('.modal-foot .btn').click()
+    return `${after} набор(ов) сохранились между сессиями`
   })
 
   // ── Оформление ───────────────────────────────────────────
@@ -548,6 +653,7 @@ async function main() {
   })
   const m = await mobile.newPage()
   await m.goto(base, { waitUntil: 'networkidle' })
+  await m.locator('[data-testid="product-card"]').first().waitFor()
   activePage = m
 
   await check('мобильная ширина 390 px: нет горизонтальной прокрутки', async () => {
@@ -607,6 +713,7 @@ async function main() {
   const shot = await browser.newContext({ viewport: { width: 1440, height: 950 } })
   const sp = await shot.newPage()
   await sp.goto(base, { waitUntil: 'networkidle' })
+  await sp.locator('[data-testid="product-card"]').first().waitFor()
   await T(sp, 'open-paste').click()
   await T(sp, 'paste-input').fill(`1. БА — 2 шт.
 2. Инь Чжень — 1 шт.

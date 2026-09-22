@@ -1,4 +1,4 @@
-import catalogJson from '../data/catalog.json'
+import catalogJson from '../../public/catalog.json'
 import type { Catalog, Product } from '../lib/types'
 import { buildIndex } from '../lib/match'
 
