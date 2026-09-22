@@ -97,7 +97,9 @@ const CONTROL_LIST = `1. БА — 2 шт.
 
 async function main() {
   assert(existsSync(DIST), 'нет папки dist — сначала npm run build')
-  await rm(path.join(ROOT, 'qa'), { recursive: true, force: true })
+  // чистим только свои папки: в qa/ лежат ещё отчёты ширин и снимки оригинала
+  await rm(SHOTS, { recursive: true, force: true })
+  await rm(DOWNLOADS, { recursive: true, force: true })
   await mkdir(SHOTS, { recursive: true })
   await mkdir(DOWNLOADS, { recursive: true })
 
