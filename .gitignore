@@ -1,0 +1,5 @@
+node_modules/
+dist/
+qa/downloads/
+*.local
+.DS_Store
