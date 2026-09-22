@@ -57,12 +57,16 @@ export const ProductCard = memo(function ProductCard({
             height={400}
           />
         ) : null}
-        <span className={`card-badge${product.in_stock ? '' : ' out'}`}>{product.stock_label}</span>
+        {!product.in_stock && <span className="card-badge out">{product.stock_label}</span>}
       </div>
 
       <div className="card-body">
         <h3 className="card-name">{product.name_short}</h3>
-        <div className="card-full">{product.name_full}</div>
+        <div className="card-full">
+          {product.name_full === product.sku
+            ? 'название в магазине не указано'
+            : product.name_full}
+        </div>
 
         <div className="card-meta">
           <span className="tag" title={product.category_path.join(' → ')}>
@@ -73,14 +77,16 @@ export const ProductCard = memo(function ProductCard({
         </div>
 
         {desc && (
-          <p className="card-desc">
-            {shown}{' '}
+          <>
+            {/* кнопка вне абзаца: на узком экране абзац обрезается по строкам,
+                и внутри него «ещё» оказалась бы за границей видимости */}
+            <p className={`card-desc${open ? ' open' : ''}`}>{shown}</p>
             {long && (
               <button className="desc-toggle" onClick={() => setOpen((v) => !v)}>
                 {open ? 'свернуть' : 'ещё'}
               </button>
             )}
-          </p>
+          </>
         )}
 
         <div className="card-foot">

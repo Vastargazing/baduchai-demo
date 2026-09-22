@@ -23,6 +23,11 @@ const UA = 'baduchai-demo-prototype/1.0 (catalog snapshot for a demo site; singl
 const TEA_ROOT_SLUG = 'chaj'
 const PAGE_DELAY = 800
 const IMAGE_DELAY = 120
+/** Берём исходник не мельче этого, чтобы не апскейлить превью. */
+const SOURCE_MIN_PX = 700
+/** Отдаём 560 px: карточка ~300 px, этого хватает и для экранов 2x. */
+const OUTPUT_PX = 560
+const OUTPUT_QUALITY = 82
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -162,6 +167,23 @@ async function fetchJson(url, attempt = 1) {
   }
 }
 
+/**
+ * Из srcset берём наименьший вариант не мельче SOURCE_MIN_PX.
+ * Превью 300×300 растягивалось до размера карточки и выглядело мылом,
+ * а полноразмерный файл качать незачем — это лишний трафик магазина.
+ */
+function pickSource(img) {
+  const variants = String(img.srcset || '')
+    .split(',')
+    .map((part) => part.trim().match(/^(\S+)\s+(\d+)w$/))
+    .filter(Boolean)
+    .map((m) => ({ url: m[1], width: Number(m[2]) }))
+    .sort((a, b) => a.width - b.width)
+
+  const big = variants.find((v) => v.width >= SOURCE_MIN_PX)
+  return big?.url ?? variants.at(-1)?.url ?? img.src ?? img.thumbnail
+}
+
 async function downloadImage(product, key) {
   const img = product.images?.[0]
   if (!img) return { image: null, note: 'изображение не опубликовано' }
@@ -170,11 +192,28 @@ async function downloadImage(product, key) {
   if (existsSync(outWebp)) return { image: `img/${safe}.webp`, note: null, cached: true }
 
   try {
-    const res = await fetch(img.thumbnail || img.src, { headers: { 'User-Agent': UA } })
+    // при длинной выкачке случаются одиночные сетевые сбои — повторяем с паузой
+    let res = null
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        res = await fetch(pickSource(img), { headers: { 'User-Agent': UA } })
+        break
+      } catch (e) {
+        if (attempt === 3) throw e
+        await sleep(1500 * attempt)
+      }
+    }
     if (!res.ok) return { image: null, note: `HTTP ${res.status} при загрузке изображения` }
     const tmp = path.join(ROOT, 'public', 'img', `${safe}.src`)
     await writeFile(tmp, Buffer.from(await res.arrayBuffer()))
-    await run('magick', [tmp, '-resize', '400x400>', '-strip', '-quality', '70', outWebp])
+    await run('magick', [
+      tmp,
+      '-resize', `${OUTPUT_PX}x${OUTPUT_PX}>`,
+      '-strip',
+      '-quality', String(OUTPUT_QUALITY),
+      '-define', 'webp:method=6',
+      outWebp,
+    ])
     await run('rm', ['-f', tmp])
     return { image: `img/${safe}.webp`, note: null }
   } catch (e) {

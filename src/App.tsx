@@ -12,6 +12,7 @@ import { Modal } from './components/Bits'
 import { ProductCard, unitLabel } from './components/ProductCard'
 import { PreviewPanel, type ApplyMode } from './components/PreviewPanel'
 import { Checkout } from './components/Checkout'
+import logoUrl from './assets/brand/logo.png'
 import './styles/app.css'
 
 /**
@@ -52,7 +53,7 @@ export default function App() {
   if (error) {
     return (
       <div className="boot">
-        <h1 className="boot-title">Бадучай</h1>
+        <img className="boot-logo" src={logoUrl} alt="Бадучай" width={150} height={111} />
         <div className="note note-danger">Не удалось загрузить каталог: {error}</div>
       </div>
     )
@@ -60,7 +61,7 @@ export default function App() {
   if (!catalog) {
     return (
       <div className="boot">
-        <h1 className="boot-title">Бадучай</h1>
+        <img className="boot-logo" src={logoUrl} alt="Бадучай" width={150} height={111} />
         <p className="hint">Загружаем каталог…</p>
       </div>
     )
@@ -134,7 +135,7 @@ function Shop({ catalog }: { catalog: Catalog }) {
       <header className="header">
         <div className="header-inner">
           <div className="brand">
-            <span className="brand-mark">Бадучай</span>
+            <img className="brand-logo" src={logoUrl} alt="Бадучай — выпил и понял!" width={104} height={77} />
             <span className="brand-sub">каталог · прототип</span>
           </div>
 
@@ -369,8 +370,7 @@ function CartPanel({
                   <div className="cart-line-name">{item.product.name_short}</div>
                   <div className="cart-line-meta">
                     {item.product.sku ? `${item.product.sku} · ` : ''}
-                    {unitLabel(item.product)} ·{' '}
-                    {formatMoney(item.product.price_minor, totals.currencySymbol)} за штуку
+                    {unitLabel(item.product)}
                   </div>
                   <div className="cart-line-controls">
                     <div className="stepper filled" style={{ transform: 'scale(0.9)', transformOrigin: 'left' }}>
@@ -394,7 +394,14 @@ function CartPanel({
                     </button>
                   </div>
                 </div>
-                <div className="cart-line-sum">{formatMoney(item.lineTotalMinor, totals.currencySymbol)}</div>
+                <div className="cart-line-sum">
+                  {formatMoney(item.lineTotalMinor, totals.currencySymbol)}
+                  {item.qty > 1 && (
+                    <span className="cart-line-each">
+                      {formatMoney(item.product.price_minor, totals.currencySymbol)} × {item.qty}
+                    </span>
+                  )}
+                </div>
               </li>
             ))}
           </ul>
