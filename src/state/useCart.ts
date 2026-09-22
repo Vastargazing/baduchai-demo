@@ -4,6 +4,21 @@ import { loadCart, saveCart, loadSets, saveSets, newSetId, type SavedSet } from 
 import { buildCart, computeTotals } from '../lib/totals'
 import { clampQty } from '../lib/qty'
 
+/**
+ * Меняет количество, СОХРАНЯЯ позицию строки в корзине.
+ *
+ * Раньше строка удалялась и дописывалась в конец: из-за этого при нажатии «+»
+ * товар уезжал вниз, а на его месте оказывался соседний — со стороны выглядело
+ * так, будто чай подменился на другой.
+ */
+export function withQty(prev: CartLine[], source_id: number, next: number): CartLine[] {
+  if (next <= 0) return prev.filter((l) => l.source_id !== source_id)
+  if (prev.some((l) => l.source_id === source_id)) {
+    return prev.map((l) => (l.source_id === source_id ? { source_id, qty: next } : l))
+  }
+  return [...prev, { source_id, qty: next }]
+}
+
 export function useCart(byId: Map<number, Product>) {
   const [lines, setLines] = useState<CartLine[]>(() => loadCart())
   const [sets, setSets] = useState<SavedSet[]>(() => loadSets())
@@ -13,19 +28,13 @@ export function useCart(byId: Map<number, Product>) {
   useEffect(() => saveSets(sets), [sets])
 
   const setQty = useCallback((source_id: number, qty: number) => {
-    const next = clampQty(qty)
-    setLines((prev) => {
-      const without = prev.filter((l) => l.source_id !== source_id)
-      return next > 0 ? [...without, { source_id, qty: next }] : without
-    })
+    setLines((prev) => withQty(prev, source_id, clampQty(qty)))
   }, [])
 
   const addQty = useCallback((source_id: number, delta: number) => {
     setLines((prev) => {
       const cur = prev.find((l) => l.source_id === source_id)?.qty ?? 0
-      const next = clampQty(cur + delta)
-      const without = prev.filter((l) => l.source_id !== source_id)
-      return next > 0 ? [...without, { source_id, qty: next }] : without
+      return withQty(prev, source_id, clampQty(cur + delta))
     })
   }, [])
 

@@ -424,6 +424,80 @@ async function main() {
     return 'для предметов вес не считается пробелом'
   })
 
+  await check('изменение количества не переставляет позиции корзины', async () => {
+    await T(page, 'open-paste').click()
+    await T(page, 'paste-input').fill('SHU-29 — 9\nSHU-47 — 9\nSHU-32 — 2')
+    await page.waitForTimeout(300)
+    await T(page, 'apply-replace').click()
+    await page.waitForTimeout(150)
+    await page.locator('.modal-foot .btn').click()
+
+    const order = async () =>
+      page.locator('[data-testid="cart-lines"] .cart-line').first().locator('..').innerHTML()
+        .then(() => page.locator('[data-testid="cart-lines"] .cart-line')
+          .evaluateAll((els) => els.map((e) => e.getAttribute('data-sku'))))
+
+    const before = await order()
+    eq(before.join(','), 'SHU-29,SHU-47,SHU-32', 'порядок до изменения')
+
+    // жмём «+» у первой строки десять раз — раньше она уезжала в конец списка
+    for (let i = 0; i < 10; i++) {
+      await page.locator('[data-testid="cart-lines"] .cart-line').first()
+        .locator('.stepper button').nth(1).click()
+      await page.waitForTimeout(40)
+    }
+    const after = await order()
+    eq(after.join(','), before.join(','), 'порядок после изменения')
+
+    const firstQty = await page.locator('[data-testid="cart-lines"] .cart-line').first()
+      .locator('.stepper input').inputValue()
+    eq(firstQty, '19', 'количество первой строки')
+    eq((await totalsOf(page)).packages, '30', 'всего упаковок')
+    return 'строка осталась на месте, количество 9 → 19'
+  })
+
+  await check('уменьшение количества тоже не двигает строку', async () => {
+    const skus = () => page.locator('[data-testid="cart-lines"] .cart-line')
+      .evaluateAll((els) => els.map((e) => e.getAttribute('data-sku')))
+    const before = await skus()
+    const middle = page.locator('[data-testid="cart-lines"] .cart-line').nth(1)
+    await middle.locator('.stepper button').nth(0).click()
+    await page.waitForTimeout(120)
+    eq((await skus()).join(','), before.join(','), 'порядок после «−»')
+    return 'порядок сохранён'
+  })
+
+  await check('прямой ввод количества в корзине не двигает строку', async () => {
+    const skus = () => page.locator('[data-testid="cart-lines"] .cart-line')
+      .evaluateAll((els) => els.map((e) => e.getAttribute('data-sku')))
+    const before = await skus()
+    await page.locator('[data-testid="cart-lines"] .cart-line').first()
+      .locator('.stepper input').fill('4')
+    await page.waitForTimeout(150)
+    eq((await skus()).join(','), before.join(','), 'порядок после ввода')
+    return 'порядок сохранён'
+  })
+
+  await check('изменение количества из каталога не двигает корзину', async () => {
+    const skus = () => page.locator('[data-testid="cart-lines"] .cart-line')
+      .evaluateAll((els) => els.map((e) => e.getAttribute('data-sku')))
+    const before = await skus()
+    // предыдущие проверки могли оставить выбранную рубрику — возвращаемся ко всему каталогу
+    await page.locator('.chips .chip').first().click()
+    await page.waitForTimeout(200)
+    await T(page, 'search').fill('SHU-29')
+    // ждём саму карточку, а не таймаут: список обновляется отложенно
+    const card = page.locator('[data-testid="product-card"][data-sku="SHU-29"]')
+    await card.waitFor({ state: 'visible' })
+    await page.evaluate(() => window.scrollTo(0, 0))
+    await card.locator('.stepper button').nth(1).click()
+    await page.waitForTimeout(150)
+    await T(page, 'search').fill('')
+    await page.waitForTimeout(200)
+    eq((await skus()).join(','), before.join(','), 'порядок после правки из каталога')
+    return 'порядок сохранён'
+  })
+
   // ── Excel ────────────────────────────────────────────────
   let templatePath = null
   await check('скачивание прайса-шаблона .xlsx', async () => {
